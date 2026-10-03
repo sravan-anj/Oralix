@@ -357,7 +357,7 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h4 className="font-bold text-sky-950 text-sm">DentiFlow Clinical Standards &amp; Safety Protocol</h4>
+              <h4 className="font-bold text-sky-950 text-sm">Oralix Clinical Standards &amp; Safety Protocol</h4>
               <p className="mt-1 leading-relaxed text-slate-600">
                 All operatory chairs undergo ISO-certified surgical sterilization between patient sittings. If you experience unexpected tooth pain, cold sensitivity, or swelling prior to your appointment, please contact the clinic reception immediately at <span className="font-bold text-sky-900">+91 98765 43210</span>.
               </p>

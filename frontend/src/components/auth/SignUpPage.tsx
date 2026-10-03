@@ -112,7 +112,7 @@ export const SignUpPage: React.FC<SignUpPageProps> = ({
           className="group flex items-center gap-2 text-xs font-bold text-[#252525] px-4 py-2 rounded-full bg-white/80 border border-stone-200/80 backdrop-blur-md hover:border-[#C8B58D] hover:bg-white transition-all duration-200 cursor-pointer shadow-xs"
         >
           <ArrowLeft className="w-4 h-4 text-[#C8B58D] group-hover:-translate-x-1 transition-transform duration-200" />
-          <span>Back to DentiFlow Showcase</span>
+          <span>Back to Oralix Showcase</span>
         </button>
 
         <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-white/80 border border-stone-200/80 backdrop-blur-md shadow-xs">
@@ -120,7 +120,7 @@ export const SignUpPage: React.FC<SignUpPageProps> = ({
             <ToothIcon size={16} />
           </div>
           <span className="text-sm font-black font-display tracking-tight text-[#252525]">
-            DENTIFLOW
+            ORALIX
           </span>
         </div>
       </header>
@@ -134,7 +134,7 @@ export const SignUpPage: React.FC<SignUpPageProps> = ({
               <Sparkles className="w-6 h-6 text-[#C8B58D]" />
             </div>
             <h1 className="text-2xl font-extrabold text-[#252525] font-display tracking-tight">
-              Create DentiFlow Chart Account
+              Create Oralix Patient Account
             </h1>
             <p className="text-xs text-[#6F6D69] font-medium mt-1">
               Join the clinic system to access digital odontograms, appointments &amp; prescriptions

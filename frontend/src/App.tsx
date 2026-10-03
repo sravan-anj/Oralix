@@ -58,16 +58,28 @@ function MainApp() {
   const { showToast } = useToast();
 
   // Authentication State
-  const [currentUser, setCurrentUser] = useState<User | null>(() => StorageService.getCurrentUser());
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
   const [adminOriginalUser, setAdminOriginalUser] = useState<User | null>(null);
 
   // Sync session with backend on initial load
   useEffect(() => {
-    AuthService.checkSession().then(user => {
-      if (user) {
-        setCurrentUser(user);
-      }
-    });
+    AuthService.checkSession()
+      .then(user => {
+        if (user) {
+          setCurrentUser(user);
+        } else {
+          StorageService.clearCurrentUser();
+          setCurrentUser(null);
+        }
+      })
+      .catch(() => {
+        StorageService.clearCurrentUser();
+        setCurrentUser(null);
+      })
+      .finally(() => {
+        setIsAuthChecking(false);
+      });
   }, []);
 
   const handleAccessAccountFromAdmin = (targetUser: User) => {
@@ -385,33 +397,8 @@ function MainApp() {
     }
   };
 
-  // Secure Role Switching with Security Clearance Enforcement
-  const executeRoleSwitch = useCallback((newRole: UserRole) => {
-    const users = StorageService.getUsers();
-    const targetUser = users.find(u => u.role === newRole);
-    if (targetUser) {
-      setCurrentUser(targetUser);
-      StorageService.saveCurrentUser(targetUser);
-      showToast(`Security Clearance Verified: Switched to ${newRole.toUpperCase()} portal`, 'success');
-      if (newRole === 'patient') {
-        setActiveTab('dashboard');
-      } else if (newRole === 'receptionist') {
-        setActiveTab('billing');
-      }
-    }
-  }, [showToast]);
-
-  const handleRequestSwitchRole = (newRole: UserRole) => {
-    if (!currentUser || currentUser.role === newRole) return;
-
-    // Direct switch to patient or receptionist mode is allowed without doctor clearance
-    if (newRole === 'patient' || newRole === 'receptionist') {
-      executeRoleSwitch(newRole);
-      return;
-    }
-
-    // Switching to Doctor or Admin REQUIRES security clearance PIN!
-    setSecurityModalTarget(newRole);
+  const handleRequestSwitchRole = (_newRole: UserRole) => {
+    showToast('Role switching requires signing in with that account credentials.', 'info');
   };
 
   // Workstation Lock Handling
@@ -500,7 +487,7 @@ function MainApp() {
     AuthService.logout(currentUser);
     setCurrentUser(null);
     handleNavigateAuth('landing');
-    showToast('Signed out of DentiFlow', 'info');
+    showToast('Signed out of Oralix', 'info');
   };
 
   // Determine if the URL or publicView explicitly targets the password reset or recovery flows
@@ -522,6 +509,20 @@ function MainApp() {
     window.location.hash.includes('error=') ||
     publicView === 'callback'
   );
+
+  // While validating session for protected routes, show sleek clinical loader
+  if (isAuthChecking && !isCallbackRoute && !isResetPasswordRoute && !isForgotPasswordRoute) {
+    return (
+      <div className="min-h-screen bg-[#F7F5F1] flex flex-col items-center justify-center">
+        <div className="w-12 h-12 rounded-2xl bg-[#252525] flex items-center justify-center shadow-lg mb-4 animate-pulse">
+          <span className="text-[#C8B58D] font-black text-xl tracking-wider">OX</span>
+        </div>
+        <p className="text-xs font-semibold text-[#6F6D69] tracking-widest uppercase">
+          Verifying Clinical Session...
+        </p>
+      </div>
+    );
+  }
 
   // If user not authenticated, or accessing dedicated public reset flows or auth callback:
   if (!currentUser || isResetPasswordRoute || isForgotPasswordRoute || isCallbackRoute) {
@@ -825,7 +826,8 @@ function MainApp() {
         actorName={currentUser.name}
         onSuccess={() => {
           if (securityModalTarget) {
-            executeRoleSwitch(securityModalTarget);
+            showToast('Role switching requires logging in with that account credentials.', 'info');
+            setSecurityModalTarget(null);
           }
         }}
       />

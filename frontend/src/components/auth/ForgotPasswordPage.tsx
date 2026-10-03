@@ -91,14 +91,14 @@ export const ForgotPasswordPage: React.FC<ForgotPasswordPageProps> = ({
           className="group flex items-center gap-2 text-xs font-bold text-[#252525] px-4 py-2 rounded-full bg-white/80 border border-stone-200/80 backdrop-blur-md hover:border-[#C8B58D] hover:bg-white transition-all duration-200 cursor-pointer shadow-xs"
         >
           <ArrowLeft className="w-4 h-4 text-[#C8B58D] group-hover:-translate-x-1 transition-transform duration-200" />
-          <span>Back to DentiFlow Showcase</span>
+          <span>Back to Oralix Showcase</span>
         </button>
         <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-white/80 border border-stone-200/80 backdrop-blur-md shadow-xs">
           <div className="w-7 h-7 rounded-lg bg-[#EDE8DE] border border-[#C8B58D]/30 text-[#252525] flex items-center justify-center font-black">
             <ToothIcon size={16} />
           </div>
           <span className="text-sm font-black font-display tracking-tight text-[#252525]">
-            DENTIFLOW
+            ORALIX
           </span>
         </div>
       </header>

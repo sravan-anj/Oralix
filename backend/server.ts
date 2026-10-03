@@ -1,5 +1,5 @@
 /**
- * server.ts — DentiFlow Production Authentication & API Server
+ * server.ts — Oralix Production Authentication & API Server
  *
  * Provides complete, secure, role-based authentication and authorization:
  * - Patient, Doctor, and Admin login with server-side credential verification.
@@ -32,6 +32,7 @@ import filesRouter from './src/server/routes/filesRouter.ts';
 import aiRouter from './src/server/routes/aiRouter.ts';
 import notificationsRouter from './src/server/routes/notificationsRouter.ts';
 import settingsRouter from './src/server/routes/settingsRouter.ts';
+import { OralixDb } from './src/server/db.ts';
 
 dotenv.config();
 
@@ -113,22 +114,7 @@ function maskEmail(email: string): string {
 }
 
 // ─── Base URL Resolution Helper ───────────────────────────────────────────────
-export function getAppBaseUrl(req?: Request): string {
-  // If request originated from an active browser session, respect the caller's origin/host
-  if (req) {
-    const origin = (req.headers.origin || '') as string;
-    const referer = (req.headers.referer || '') as string;
-    const host = (req.headers.host || '') as string;
-    const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
-    const requestHost = origin || referer || (host ? `${isHttps ? 'https' : 'http'}://${host}` : '');
-    if (requestHost) {
-      const match = requestHost.match(/https?:\/\/[a-zA-Z0-9.-]+(:[0-9]+)?/);
-      if (match && match[0]) {
-        return match[0].replace(/\/$/, '');
-      }
-    }
-  }
-
+export function getAppBaseUrl(): string {
   const custom = process.env.FRONTEND_URL || process.env.APP_URL;
   if (custom && custom.trim()) {
     return custom.trim().replace(/\/$/, '');
@@ -139,16 +125,36 @@ export function getAppBaseUrl(req?: Request): string {
   return 'http://localhost:3000';
 }
 
-// ─── Stable Secrets ───────────────────────────────────────────────────────────
-const STABLE_SECRET_KEY =
-  process.env.FLASK_SECRET_KEY ||
-  process.env.SESSION_SECRET ||
-  process.env.AUTH_SECRET ||
-  'oralix_stable_production_secret_key_v1';
+// ─── Fail-Safe Stable Secrets ────────────────────────────────────────────────
+export function resolveSecretKey(name: string, fallbackDev?: string): string {
+  const val = process.env[name];
+  if (
+    val &&
+    val.trim() &&
+    val !== 'oralix_stable_production_secret_key_v1' &&
+    !val.includes('CHANGE_ME') &&
+    !val.includes('change_me') &&
+    !val.includes('YOUR_')
+  ) {
+    return val.trim();
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(
+      `[Oralix FATAL] Production secret "${name}" is missing, insecure, or using a default placeholder. Fail-fast startup.`
+    );
+  }
+  return fallbackDev || 'oralix_dev_insecure_secret_for_local_testing_only';
+}
 
-const RESET_SECRET_KEY =
-  process.env.PASSWORD_RESET_SECRET ||
-  STABLE_SECRET_KEY;
+const STABLE_SECRET_KEY = resolveSecretKey(
+  'SESSION_SECRET',
+  process.env.AUTH_SECRET || process.env.FLASK_SECRET_KEY
+);
+
+const RESET_SECRET_KEY = resolveSecretKey(
+  'PASSWORD_RESET_SECRET',
+  STABLE_SECRET_KEY
+);
 
 // ─── Cookie Parser Helper ─────────────────────────────────────────────────────
 function parseCookies(req: Request): Record<string, string> {
@@ -183,18 +189,29 @@ export interface PwRecord {
 
 export function loadPwStore(): PwRecord[] {
   try {
-    if (!existsSync(PW_STORE_PATH)) return [];
-    return JSON.parse(readFileSync(PW_STORE_PATH, 'utf8')) as PwRecord[];
-  } catch {
+    const creds = OralixDb.getAllCredentials();
+    if (creds.length === 0 && existsSync(PW_STORE_PATH)) {
+      try {
+        const filePws = JSON.parse(readFileSync(PW_STORE_PATH, 'utf8')) as PwRecord[];
+        OralixDb.saveAllCredentials(filePws);
+        return filePws;
+      } catch {}
+    }
+    return creds;
+  } catch (err) {
+    console.error('[Oralix] Failed loading pw store from db:', err);
     return [];
   }
 }
 
 export function savePwStore(records: PwRecord[]): void {
   try {
-    writeFileSync(PW_STORE_PATH, JSON.stringify(records, null, 2), 'utf8');
+    OralixDb.saveAllCredentials(records);
+    try {
+      writeFileSync(PW_STORE_PATH, JSON.stringify(records, null, 2), 'utf8');
+    } catch {}
   } catch (err) {
-    console.error('[Dentiflow] Failed saving password store:', err);
+    console.error('[Oralix] Failed saving password store to db:', err);
   }
 }
 
@@ -236,7 +253,7 @@ export interface ServerUser {
   name: string;
   email: string;
   role: UserRole;
-  avatarText: string;
+  avatarText?: string;
   phone?: string;
   doctorId?: string;
   patientId?: string;
@@ -244,8 +261,6 @@ export interface ServerUser {
   status: 'active' | 'inactive' | 'on_leave';
   joinedDate?: string;
 }
-
-const USER_STORE_PATH = path.resolve('.dentiflow_user_store.json');
 
 const DEFAULT_USERS: ServerUser[] = [
   {
@@ -324,31 +339,44 @@ const DEFAULT_PASSWORDS: Record<string, string> = {
   'u-rakshitha-semala': process.env.INITIAL_PATIENT_PASSWORD || 'patient123',
 };
 
+const USER_STORE_PATH = path.resolve('.dentiflow_user_store.json');
+
 export function loadUserStore(): ServerUser[] {
   try {
-    if (!existsSync(USER_STORE_PATH)) {
-      writeFileSync(USER_STORE_PATH, JSON.stringify(DEFAULT_USERS, null, 2), 'utf8');
+    if (existsSync(USER_STORE_PATH)) {
+      try {
+        const raw = readFileSync(USER_STORE_PATH, 'utf8');
+        const fileUsers = JSON.parse(raw) as ServerUser[];
+        if (Array.isArray(fileUsers)) {
+          for (const u of fileUsers) {
+            if (u.id && !OralixDb.getUser(u.id)) {
+              OralixDb.saveUser(u);
+            }
+          }
+        }
+      } catch {}
+    }
+    const users = OralixDb.getAllUsers();
+    if (users.length > 0) return users;
+    if (process.env.NODE_ENV !== 'production') {
+      OralixDb.saveUsers(DEFAULT_USERS);
       return DEFAULT_USERS;
     }
-    const users = JSON.parse(readFileSync(USER_STORE_PATH, 'utf8')) as ServerUser[];
-    if (!users.some(u => u.id === 'u-receptionist')) {
-      const recUser = DEFAULT_USERS.find(u => u.id === 'u-receptionist');
-      if (recUser) {
-        users.push(recUser);
-        saveUserStore(users);
-      }
-    }
-    return users;
-  } catch {
-    return DEFAULT_USERS;
+    return [];
+  } catch (err) {
+    console.error('[Oralix] Failed loading user store from db:', err);
+    return [];
   }
 }
 
 export function saveUserStore(users: ServerUser[]): void {
   try {
-    writeFileSync(USER_STORE_PATH, JSON.stringify(users, null, 2), 'utf8');
+    OralixDb.saveUsers(users);
+    try {
+      writeFileSync(USER_STORE_PATH, JSON.stringify(users, null, 2), 'utf8');
+    } catch {}
   } catch (err) {
-    console.error('[Dentiflow] Failed saving user store:', err);
+    console.error('[Oralix] Failed saving user store to db:', err);
   }
 }
 
@@ -374,6 +402,35 @@ export async function bootstrapDefaultPasswords(): Promise<void> {
   }
 }
 
+export async function provisionInitialAdmin(): Promise<void> {
+  const email = process.env.INITIAL_ADMIN_EMAIL;
+  const pass = process.env.INITIAL_ADMIN_PASSWORD;
+  if (email && pass) {
+    const cleanEmail = email.trim().toLowerCase();
+    const existing = OralixDb.findUserByEmail(cleanEmail);
+    if (!existing) {
+      const userId = `u-admin-${Date.now()}`;
+      OralixDb.saveUser({
+        id: userId,
+        name: 'System Administrator',
+        email: cleanEmail,
+        role: 'admin',
+        avatarText: 'AD',
+        status: 'active',
+        joinedDate: new Date().toISOString().split('T')[0],
+      });
+      const pw = await pbkdf2Hash(pass);
+      OralixDb.saveUserPassword({
+        userId,
+        salt: pw.salt,
+        hash: pw.hash,
+        iterations: pw.iterations,
+      });
+      console.info(`[Oralix] Provisioned initial admin user: ${cleanEmail}`);
+    }
+  }
+}
+
 // ─── Session Store ────────────────────────────────────────────────────────────
 export interface SessionRecord {
   token: string;
@@ -383,8 +440,6 @@ export interface SessionRecord {
   expiresAt: number;
 }
 
-const SESSION_STORE_PATH = path.resolve('.dentiflow_session_store.json');
-
 const SESSION_DURATIONS: Record<UserRole, number> = {
   doctor: 8 * 60 * 60 * 1000,
   admin: 8 * 60 * 60 * 1000,
@@ -392,28 +447,41 @@ const SESSION_DURATIONS: Record<UserRole, number> = {
   patient: 24 * 60 * 60 * 1000,
 };
 
+const SESSION_STORE_PATH = path.resolve('.dentiflow_session_store.json');
+
 export function loadSessionStore(): Map<string, SessionRecord> {
   try {
-    if (!existsSync(SESSION_STORE_PATH)) return new Map();
-    const raw = readFileSync(SESSION_STORE_PATH, 'utf8');
-    const entries = JSON.parse(raw) as [string, SessionRecord][];
-    const map = new Map<string, SessionRecord>(entries);
-    const now = Date.now();
-    for (const [token, session] of map) {
-      if (now > session.expiresAt) map.delete(token);
+    const map = OralixDb.getAllSessionsMap();
+    if (map.size === 0 && existsSync(SESSION_STORE_PATH)) {
+      try {
+        const raw = readFileSync(SESSION_STORE_PATH, 'utf8');
+        const entries = JSON.parse(raw) as [string, SessionRecord][];
+        if (Array.isArray(entries)) {
+          for (const [token, s] of entries) {
+            if (s && s.expiresAt > Date.now()) {
+              OralixDb.createSession(s);
+              map.set(token, s);
+            }
+          }
+        }
+      } catch {}
     }
     return map;
-  } catch {
+  } catch (err) {
+    console.error('[Oralix] Failed loading session store from db:', err);
     return new Map();
   }
 }
 
 export function saveSessionStore(map: Map<string, SessionRecord>): void {
   try {
-    const entries = Array.from(map.entries());
-    writeFileSync(SESSION_STORE_PATH, JSON.stringify(entries, null, 2), 'utf8');
+    OralixDb.saveSessionsMap(map);
+    try {
+      const entries = Array.from(map.entries());
+      writeFileSync(SESSION_STORE_PATH, JSON.stringify(entries, null, 2), 'utf8');
+    } catch {}
   } catch (err) {
-    console.error('[Dentiflow] Failed saving session store:', err);
+    console.error('[Oralix] Failed saving session store to db:', err);
   }
 }
 
@@ -428,24 +496,34 @@ export function createServerSession(user: ServerUser): SessionRecord {
     expiresAt: now + (SESSION_DURATIONS[user.role] || 8 * 60 * 60 * 1000),
   };
 
-  const sessions = loadSessionStore();
-  sessions.set(token, session);
-  saveSessionStore(sessions);
+  OralixDb.createSession(session);
+  try {
+    const sessions = loadSessionStore();
+    sessions.set(token, session);
+    const entries = Array.from(sessions.entries());
+    writeFileSync(SESSION_STORE_PATH, JSON.stringify(entries, null, 2), 'utf8');
+  } catch {}
   return session;
 }
 
 export function invalidateServerSession(token: string): void {
-  const sessions = loadSessionStore();
-  sessions.delete(token);
-  saveSessionStore(sessions);
+  OralixDb.deleteSession(token);
+  try {
+    const sessions = loadSessionStore();
+    sessions.delete(token);
+    writeFileSync(SESSION_STORE_PATH, JSON.stringify(Array.from(sessions.entries()), null, 2), 'utf8');
+  } catch {}
 }
 
 export function invalidateUserSessions(userId: string): void {
-  const sessions = loadSessionStore();
-  for (const [token, session] of sessions) {
-    if (session.userId === userId) sessions.delete(token);
-  }
-  saveSessionStore(sessions);
+  OralixDb.deleteUserSessions(userId);
+  try {
+    const sessions = loadSessionStore();
+    for (const [token, session] of sessions) {
+      if (session.userId === userId) sessions.delete(token);
+    }
+    writeFileSync(SESSION_STORE_PATH, JSON.stringify(Array.from(sessions.entries()), null, 2), 'utf8');
+  } catch {}
 }
 
 // ─── Reset Token Store ────────────────────────────────────────────────────────
@@ -466,26 +544,37 @@ export function sha256Token(token: string): string {
 
 export function loadResetStore(): Map<string, ResetEntry> {
   try {
-    if (!existsSync(RESET_STORE_PATH)) return new Map();
-    const raw = readFileSync(RESET_STORE_PATH, 'utf8');
-    const entries = JSON.parse(raw) as [string, ResetEntry][];
-    const map = new Map<string, ResetEntry>(entries);
-    const now = Date.now();
-    for (const [hash, entry] of map) {
-      if (now > entry.expiresAt || entry.used) map.delete(hash);
+    const map = OralixDb.getAllResetTokensMap();
+    if (existsSync(RESET_STORE_PATH)) {
+      try {
+        const raw = readFileSync(RESET_STORE_PATH, 'utf8');
+        const entries = JSON.parse(raw) as [string, ResetEntry][];
+        if (Array.isArray(entries)) {
+          for (const [hash, entry] of entries) {
+            if (!map.has(hash) && !entry.used && Date.now() <= entry.expiresAt) {
+              OralixDb.saveResetToken(entry);
+              map.set(hash, entry);
+            }
+          }
+        }
+      } catch {}
     }
     return map;
-  } catch {
+  } catch (err) {
+    console.error('[Oralix] Failed loading reset store from db:', err);
     return new Map();
   }
 }
 
 export function saveResetStore(map: Map<string, ResetEntry>): void {
   try {
-    const entries = Array.from(map.entries());
-    writeFileSync(RESET_STORE_PATH, JSON.stringify(entries, null, 2), 'utf8');
+    OralixDb.saveResetTokensMap(map);
+    try {
+      const entries = Array.from(map.entries());
+      writeFileSync(RESET_STORE_PATH, JSON.stringify(entries, null, 2), 'utf8');
+    } catch {}
   } catch (err) {
-    console.error('[Dentiflow] Failed saving reset store:', err);
+    console.error('[Oralix] Failed saving reset store to db:', err);
   }
 }
 
@@ -505,10 +594,10 @@ function buildSmtpTransporter(): Transporter | null {
   return null;
 }
 
-async function sendResetEmail(toEmail: string, plainToken: string, req?: Request): Promise<boolean> {
+async function sendResetEmail(toEmail: string, plainToken: string): Promise<boolean> {
   const resendApiKey = process.env.RESEND_API_KEY;
   const emailFrom = process.env.MAIL_FROM || process.env.EMAIL_FROM || 'Oralix <noreply@oralix.online>';
-  const appUrl = getAppBaseUrl(req);
+  const appUrl = getAppBaseUrl();
   const resetLink = `${appUrl}/reset-password?token=${encodeURIComponent(plainToken)}`;
 
   const subject = 'Reset your Oralix password';
@@ -895,26 +984,24 @@ export function authenticateSession(req: AuthenticatedRequest, res: Response, ne
     return;
   }
 
-  const sessions = loadSessionStore();
-  const session = sessions.get(token);
+  const session = OralixDb.getSession(token);
 
   if (!session || Date.now() > session.expiresAt) {
-    if (session) invalidateServerSession(token);
+    if (session) OralixDb.deleteSession(token);
     res.status(401).json({ error: 'Session has expired. Please sign in again.' });
     return;
   }
 
-  const users = loadUserStore();
-  const user = users.find(u => u.id === session.userId);
+  const user = OralixDb.getUser(session.userId);
 
   if (!user || user.status === 'inactive') {
-    invalidateServerSession(token);
+    OralixDb.deleteSession(token);
     res.status(401).json({ error: 'User account is inactive or not found.' });
     return;
   }
 
   if (user.role !== session.role) {
-    invalidateServerSession(token);
+    OralixDb.deleteSession(token);
     res.status(403).json({ error: 'Security violation: role mismatch detected.' });
     return;
   }
@@ -929,13 +1016,11 @@ export function optionalAuthenticateSession(req: AuthenticatedRequest, _res: Res
   if (!token) {
     return next();
   }
-  const sessions = loadSessionStore();
-  const session = sessions.get(token);
+  const session = OralixDb.getSession(token);
   if (!session || Date.now() > session.expiresAt) {
     return next();
   }
-  const users = loadUserStore();
-  const user = users.find(u => u.id === session.userId);
+  const user = OralixDb.getUser(session.userId);
   if (user && user.status !== 'inactive' && user.role === session.role) {
     req.user = user;
     req.session = session;
@@ -1002,8 +1087,10 @@ app.post(
       return;
     }
 
-    // Ensure default password hashes are primed
-    await bootstrapDefaultPasswords();
+    // Prime default test passwords if running in local test environment
+    if (process.env.NODE_ENV !== 'production') {
+      await bootstrapDefaultPasswords();
+    }
 
     const cleanIdentifier = identifier.trim().toLowerCase();
     const cleanId = cleanIdentifier.replace(/[\s\-\+\(\)]/g, '');
@@ -1184,6 +1271,100 @@ app.post(
 );
 
 /**
+ * POST /api/auth/oauth/google
+ * Synchronizes Google OAuth session with Oralix backend.
+ * Enforces role: 'patient' (cannot be escalated).
+ * Issues HttpOnly session cookie and returns authenticated patient user.
+ */
+app.post(
+  '/api/auth/oauth/google',
+  rateLimit(60 * 1000, 20, 'Too many OAuth synchronization requests. Please wait 1 minute.'),
+  async (req: Request, res: Response) => {
+    const { email, name } = req.body as {
+      accessToken?: string;
+      email?: string;
+      name?: string;
+      avatarUrl?: string;
+    };
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      res.status(400).json({ error: 'Valid email address is required for Google OAuth synchronization.' });
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = (name || '').trim() || cleanEmail.split('@')[0];
+
+    // Find existing user or create a new PATIENT user (RBAC enforcement: OAuth users are ALWAYS patient role)
+    let user = OralixDb.findUserByEmail(cleanEmail);
+
+    if (user) {
+      if (user.status === 'inactive') {
+        res.status(403).json({ error: 'Your account is inactive. Please contact clinic administration.' });
+        return;
+      }
+    } else {
+      // Create new Patient account
+      const userId = `u-oauth-${Date.now()}`;
+      const initials = cleanName
+        .split(' ')
+        .map(n => n[0])
+        .join('')
+        .substring(0, 2)
+        .toUpperCase() || 'OX';
+
+      const patientId = `p-${Date.now()}`;
+      user = OralixDb.saveUser({
+        id: userId,
+        name: cleanName,
+        email: cleanEmail,
+        role: 'patient', // STRICTLY PATIENT
+        avatarText: initials,
+        patientId,
+        status: 'active',
+        joinedDate: new Date().toISOString().split('T')[0],
+      });
+
+      // Ensure corresponding clinic patient record exists
+      const existingPatient = OralixDb.findPatientByEmail(cleanEmail);
+      if (!existingPatient) {
+        const allPatients = OralixDb.getPatients('clinic-ox-main');
+        const code = `OX-PAT-${new Date().getFullYear()}-${String(allPatients.length + 1).padStart(4, '0')}`;
+        OralixDb.savePatient({
+          id: patientId,
+          userId,
+          clinicId: 'clinic-ox-main',
+          code,
+          name: cleanName,
+          age: 30,
+          gender: 'Other',
+          phone: '',
+          email: cleanEmail,
+          medicalAlerts: [],
+          balanceDue: 0,
+          registeredDate: new Date().toISOString().split('T')[0],
+          status: 'active',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    const session = createServerSession(user as ServerUser);
+    setSessionCookie(res, session.token, session.expiresAt - Date.now());
+
+    console.info(`[Oralix] Google OAuth session established for ${maskEmail(cleanEmail)} (role=${user.role})`);
+
+    res.json({
+      success: true,
+      user,
+      token: session.token,
+      expiresAt: session.expiresAt,
+    });
+  }
+);
+
+/**
  * POST /api/auth/logout
  */
 app.post('/api/auth/logout', (req: Request, res: Response) => {
@@ -1263,7 +1444,7 @@ app.post(
     saveResetStore(resetStore);
 
     try {
-      await sendResetEmail(cleanEmail, plainToken, req);
+      await sendResetEmail(cleanEmail, plainToken);
     } catch (err: any) {
       console.error('[Oralix] Error during email dispatch:', err?.message || err);
     }
@@ -1475,7 +1656,7 @@ app.get('/api/admin/users', authenticateSession, requireRole('admin'), (_req: Re
 });
 
 // ─── Billing & Digital Receipt API ───────────────────────────────────────────
-app.post('/api/billing/send-receipt', optionalAuthenticateSession, async (req: Request, res: Response) => {
+app.post('/api/billing/send-receipt', authenticateSession, async (req: Request, res: Response) => {
   const {
     invoiceNumber,
     patientName,
@@ -1548,11 +1729,13 @@ app.use('/api/settings', authenticateSession, settingsRouter);
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (_req: Request, res: Response) => {
-  res.json({
-    ok: true,
+  const dbHealthy = OralixDb.isHealthy();
+  res.status(dbHealthy ? 200 : 503).json({
+    ok: dbHealthy,
     service: 'oralix-auth',
     domain: 'oralix.online',
-    status: 'healthy',
+    status: dbHealthy ? 'healthy' : 'degraded',
+    database: dbHealthy ? 'connected' : 'unhealthy',
     timestamp: new Date().toISOString(),
   });
 });
@@ -1588,9 +1771,15 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // ─── Server Startup ───────────────────────────────────────────────────────────
-bootstrapDefaultPasswords().catch(err => {
-  console.error('[Oralix] Error bootstrapping default passwords:', err);
-});
+if (process.env.NODE_ENV === 'production') {
+  provisionInitialAdmin().catch(err => {
+    console.error('[Oralix] Error provisioning initial admin:', err);
+  });
+} else {
+  bootstrapDefaultPasswords().catch(err => {
+    console.error('[Oralix] Error bootstrapping default test passwords:', err);
+  });
+}
 
 if (isDirectRun || process.env.STANDALONE_SERVER === 'true') {
   const PORT = Number(process.env.API_PORT ?? 3001);

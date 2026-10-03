@@ -18,6 +18,10 @@ function requireAuth(req: AuthenticatedRequest, res: Response, next: Function) {
     res.status(401).json({ error: 'Authentication required.' });
     return;
   }
+  if (req.user.role === 'patient') {
+    res.status(403).json({ error: 'Access denied: Patients are not authorized to view practice analytics or integrations.' });
+    return;
+  }
   next();
 }
 

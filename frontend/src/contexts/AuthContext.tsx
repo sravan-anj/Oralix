@@ -2,7 +2,7 @@
  * AuthContext.tsx
  *
  * Centralized React authentication context.
- * Exposes authentication state and actions across the DentiFlow application.
+ * Exposes authentication state and actions across the Oralix application.
  * Manages session validation on startup and restoration across page refreshes.
  */
 
@@ -32,11 +32,11 @@ export interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<User | null>(() => StorageService.getCurrentUser());
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const initialized = useRef(false);
 
-  // Validate and restore session on mount
+  // Validate and restore session on mount with authoritative backend check
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
@@ -51,7 +51,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setCurrentUser(null);
         }
       } catch {
-        // Fallback to locally cached user
+        // Backend unavailable: DO NOT treat local cached user as authenticated
+        StorageService.clearCurrentUser();
+        setCurrentUser(null);
       } finally {
         setIsLoading(false);
       }

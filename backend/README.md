@@ -1,12 +1,15 @@
-# DentiFlow / Oralix — Backend Server
+# Oralix — Backend API & Persistence Server
 
-Node.js, TypeScript, and Express REST API backend for DentiFlow / Oralix.
+Node.js, TypeScript, and Express REST API backend for Oralix Dental Practice Platform.
 
 ## Features
-- **Authentication & RBAC:** PBKDF2-SHA256 password hashing (210,000 iterations), session validation, role enforcement (Patient, Doctor, Admin, Receptionist).
-- **Password Reset:** Cryptographic token generation, 30-minute expiration, email dispatch via Resend/SMTP.
-- **RESTful Endpoints:** Patients, Appointments, Billing, Clinical Notes, Inventory, AI Assistant, Analytics.
-- **Data Persistence:** Lightweight JSON document stores with atomic operations.
+- **Authentication & RBAC:** PBKDF2-SHA256 password hashing (210,000 iterations), HttpOnly session cookies, role verification (Patient, Doctor, Admin, Receptionist).
+- **Password Reset:** Cryptographic HMAC-SHA256 token hashing, 30-minute expiration, single-use enforcement, email delivery via Resend API (`noreply@oralix.online`).
+- **Google OAuth Synchronization:** Backend session mapping with strict `patient` role enforcement.
+- **Relational Persistence:** SQLite relational persistence engine (`backend/data/oralix.db`) with WAL mode, foreign keys, transactions, and migration tools.
+- **Billing & Digital Receipts:** Invoice calculation, payment idempotency, balance tracking, and PDF receipts.
+- **Appointments & Conflicts:** Double-booking prevention and status state machine.
+- **Files & Scoping:** Strict MIME type validation, file size limits, and patient-scoped access control.
 
 ## Getting Started
 

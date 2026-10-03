@@ -437,7 +437,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <h3 className="text-xs font-bold text-white">Need Credentials Help?</h3>
             </div>
             <p className="text-[11px] text-sky-200 leading-relaxed">
-              If your DCI license number, clinical specialty, or staff permissions require updates, you can edit your profile above or contact practice administration at <span className="text-white font-semibold">admin@dentiflow.com</span>.
+              If your DCI license number, clinical specialty, or staff permissions require updates, you can edit your profile above or contact practice administration at <span className="text-white font-semibold">admin@oralix.online</span>.
             </p>
           </div>
         </div>

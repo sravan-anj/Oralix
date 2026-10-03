@@ -65,7 +65,7 @@ function extractCookie(headers: http.IncomingHttpHeaders): string | undefined {
 
 async function runTests() {
   console.log('============================================================');
-  console.log('  DENTIFLOW AUTHENTICATION & RBAC AUTOMATED TEST SUITE');
+  console.log('  ORALIX AUTHENTICATION & RBAC AUTOMATED TEST SUITE');
   console.log('============================================================\n');
 
   await bootstrapDefaultPasswords();
@@ -444,6 +444,54 @@ async function runTests() {
     assert(
       healthRes.status === 200 && healthRes.body.ok === true && healthRes.body.service === 'oralix-auth' && healthRes.body.domain === 'oralix.online',
       '36. Backend health endpoint active and configured for oralix-auth on oralix.online'
+    );
+
+    // F. Google OAuth synchronization
+    const oauthRes = await request('POST', '/api/auth/oauth/google', {
+      email: 'oauth-patient-test@example.com',
+      name: 'Google OAuth Patient',
+    });
+    assert(
+      oauthRes.status === 200 &&
+      oauthRes.body.user.role === 'patient' &&
+      Boolean(oauthRes.body.token),
+      '37. Google OAuth session established with patient role'
+    );
+
+    // G. Google OAuth cannot escalate role
+    const oauthTamperRes = await request('POST', '/api/auth/oauth/google', {
+      email: 'oauth-tamper@example.com',
+      name: 'Tamper User',
+      role: 'admin',
+    });
+    assert(
+      oauthTamperRes.status === 200 &&
+      oauthTamperRes.body.user.role === 'patient',
+      '38. Google OAuth role escalation rejected (role remains strictly patient)'
+    );
+
+    // H. Health Check database report
+    assert(
+      healthRes.body.database === 'connected',
+      '39. Backend health endpoint reports database: connected'
+    );
+
+    // I. Unauthenticated billing receipt dispatch rejected
+    const unauthReceiptRes = await request('POST', '/api/billing/send-receipt', {
+      invoiceNumber: 'INV-TEST-001',
+      patientName: 'Test Patient',
+      patientEmail: 'test@example.com',
+    });
+    assert(
+      unauthReceiptRes.status === 401,
+      '40. Unauthenticated billing send-receipt rejected with 401 Unauthorized'
+    );
+
+    // J. Patient access to growth analytics rejected
+    const patientGrowthRes = await request('GET', '/api/growth/analytics', undefined, undefined, oauthRes.body.token);
+    assert(
+      patientGrowthRes.status === 403,
+      '41. Patient access to clinic growth & financial analytics rejected with 403 Forbidden'
     );
 
   } catch (err) {

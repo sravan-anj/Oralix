@@ -8,3 +8,9 @@ coverage/
 !.env.example
 .dentiflow_*.json
 .oralix_*.json
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+backend/data/*.db*
+backend/data/

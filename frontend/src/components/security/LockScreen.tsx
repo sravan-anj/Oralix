@@ -112,7 +112,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
           </span>
           <div>
             <h1 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
-              DentiFlow Clinic Station
+              Oralix Clinic Station
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                 TERMINAL SECURED
               </span>
@@ -243,7 +243,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
 
       {/* Footer */}
       <footer className="p-4 text-center text-xs text-slate-500 border-t border-white/5 backdrop-blur-sm bg-white/5">
-        Protected by DentiFlow Zero-Trust Clinical Access Control • Auto-Lock Active
+        Protected by Oralix Zero-Trust Clinical Access Control • Auto-Lock Active
       </footer>
     </div>
   );

@@ -22,9 +22,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
   const token = typeof window !== 'undefined'
     ? (sessionStorage.getItem('oralix_auth_token_v1') ||
-       localStorage.getItem('oralix_auth_token_v1') ||
-       localStorage.getItem('oralix_bearer_token') ||
-       sessionStorage.getItem('dentiflow_auth_token_v1'))
+       localStorage.getItem('oralix_auth_token_v1'))
     : null;
   if (token && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${token}`);

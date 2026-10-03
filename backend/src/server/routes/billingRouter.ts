@@ -283,6 +283,7 @@ const recordPaymentHandler = async (req: AuthenticatedRequest, res: Response) =>
   const method: SupportedPaymentMethod = validMethods.includes(paymentMethod) ? paymentMethod : 'UPI';
 
   // 1. Record payment transaction
+  const nowIso = new Date().toISOString();
   const paymentRecord: PaymentRecord = {
     id: `pay-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     idempotencyKey: cleanIdempKey || `auto-${Date.now()}`,
@@ -294,9 +295,11 @@ const recordPaymentHandler = async (req: AuthenticatedRequest, res: Response) =>
     amount: payAmt,
     paymentMethod: method,
     transactionRef: transactionRef ? String(transactionRef).trim() : `TXN-${Date.now()}`,
+    date: nowIso.split('T')[0],
     status: 'SUCCESSFUL',
     recordedBy: user.id,
-    timestamp: new Date().toISOString(),
+    timestamp: nowIso,
+    createdAt: nowIso,
   };
 
   OralixDb.savePayment(paymentRecord);
@@ -451,7 +454,12 @@ router.get('/receipts/:id', requireAuth, (req: AuthenticatedRequest, res: Respon
   if (user.role === 'patient') {
     const ownPatient = OralixDb.findPatientByEmail(user.email, clinicId);
     const pid = ownPatient?.id || user.patientId || user.id;
-    if (receipt.patientId !== pid) {
+    const isOwner =
+      receipt.patientId === pid ||
+      (ownPatient && receipt.patientId === ownPatient.id) ||
+      (receipt.patientEmail && receipt.patientEmail.toLowerCase() === user.email.toLowerCase());
+
+    if (!isOwner) {
       res.status(403).json({ error: 'Access denied: You can only view your own receipts.' });
       return;
     }

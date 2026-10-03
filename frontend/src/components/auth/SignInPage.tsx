@@ -128,7 +128,7 @@ export const SignInPage: React.FC<SignInPageProps> = ({
           className="group flex items-center gap-2 text-xs font-bold text-[#252525] px-4 py-2 rounded-full bg-white/80 border border-stone-200/80 backdrop-blur-md hover:border-[#C8B58D] hover:bg-white transition-all duration-200 cursor-pointer shadow-xs"
         >
           <ToothIcon size={14} className="text-[#C8B58D]" />
-          <span>Back to DentiFlow Showcase</span>
+          <span>Back to Oralix Showcase</span>
         </button>
 
         <div className="flex items-center gap-2.5 px-4 py-2 rounded-full bg-white/80 border border-stone-200/80 backdrop-blur-md shadow-xs">
@@ -136,7 +136,7 @@ export const SignInPage: React.FC<SignInPageProps> = ({
             <ToothIcon size={16} />
           </div>
           <span className="text-sm font-black font-display tracking-tight text-[#252525]">
-            DENTIFLOW
+            ORALIX
           </span>
         </div>
       </header>
@@ -150,7 +150,7 @@ export const SignInPage: React.FC<SignInPageProps> = ({
               <KeyRound className="w-6 h-6 text-[#C8B58D]" />
             </div>
             <h1 className="text-2xl font-extrabold text-[#252525] font-display tracking-tight">
-              Sign In to DentiFlow
+              Sign In to Oralix
             </h1>
             <p className="text-xs text-[#6F6D69] font-medium mt-1">
               Enter your credentials to access your clinical or patient account

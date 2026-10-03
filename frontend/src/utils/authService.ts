@@ -76,8 +76,6 @@ export const AuthService = {
 
       if (data.token) {
         sessionStorage.setItem(AUTH_STORAGE_KEYS.SESSION_TOKEN, data.token);
-        localStorage.setItem(AUTH_STORAGE_KEYS.SESSION_TOKEN, data.token);
-        localStorage.setItem('oralix_bearer_token', data.token);
       }
 
       SecurityService.clearFailedAttempts();
@@ -133,8 +131,6 @@ export const AuthService = {
       const newUser: User = data.user;
       if (data.token) {
         sessionStorage.setItem(AUTH_STORAGE_KEYS.SESSION_TOKEN, data.token);
-        localStorage.setItem(AUTH_STORAGE_KEYS.SESSION_TOKEN, data.token);
-        localStorage.setItem('oralix_bearer_token', data.token);
       }
 
       // Update users and ensure patient profile is provisioned
@@ -218,14 +214,19 @@ export const AuthService = {
         }
       }
     } catch {
-      // Fallback to local storage
+      // Backend unavailable or network error
     }
 
-    const storedUser = StorageService.getCurrentUser();
-    return storedUser || null;
+    // Backend session check failed or unauthorized: invalidate local state
+    StorageService.clearCurrentUser();
+    sessionStorage.removeItem(AUTH_STORAGE_KEYS.SESSION_TOKEN);
+    sessionStorage.removeItem(AUTH_STORAGE_KEYS.LEGACY_TOKEN);
+    localStorage.removeItem(AUTH_STORAGE_KEYS.SESSION_TOKEN);
+    localStorage.removeItem(AUTH_STORAGE_KEYS.LEGACY_TOKEN);
+    return null;
   },
 
-  /** Synchronous session check from local cache */
+  /** Synchronous session check from local cache for display initialization only */
   validateSession(): User | null {
     return StorageService.getCurrentUser();
   },
@@ -481,6 +482,36 @@ export const AuthService = {
         patientId: meta.patient_id || `p-${sessionUser.id.substring(0, 8)}`,
         status: 'active',
       };
+
+      // Establish authoritative session with Oralix Express backend
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData?.session?.access_token;
+        const res = await fetch(getApiEndpoint('/api/auth/oauth/google'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            accessToken,
+            email: sessionUser.email,
+            name: fullName,
+            avatarUrl: meta.avatar_url,
+          }),
+        });
+        if (res.ok) {
+          const backendData = await res.json();
+          if (backendData.user) {
+            if (backendData.token) {
+              sessionStorage.setItem(AUTH_STORAGE_KEYS.SESSION_TOKEN, backendData.token);
+            }
+            StorageService.saveCurrentUser(backendData.user);
+            StorageService.updateUser(backendData.user);
+            return backendData.user;
+          }
+        }
+      } catch (backendErr) {
+        console.warn('[Oralix] Backend OAuth sync notice:', backendErr);
+      }
 
       // Upsert profile in Supabase database if available
       try {

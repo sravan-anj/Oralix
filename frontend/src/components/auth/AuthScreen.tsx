@@ -99,11 +99,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
     let isValid = false;
     if (role === 'doctor') {
-      isValid = cleanPass === 'doctor123' || cleanPass === creds.doctorPin || cleanPass.toUpperCase() === 'DOC-4482' || cleanPass.toUpperCase() === 'DOC-2026';
+      isValid = cleanPass === creds.doctorPin;
     } else if (role === 'admin') {
-      isValid = cleanPass === 'admin123' || cleanPass === creds.adminPin || cleanPass.toUpperCase() === 'ADMIN-9042';
+      isValid = cleanPass === creds.adminPin;
     } else if (role === 'patient') {
-      isValid = cleanPass === 'patient123' || cleanPass === creds.patientDefaultPin || cleanPass === '123456';
+      isValid = cleanPass === creds.patientDefaultPin;
     }
 
     if (!isValid) {
@@ -423,11 +423,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     </div>
 
                     <div>
-                      <label className="block text-xs font-bold text-slate-800 mb-1 flex justify-between">
+                      <label className="block text-xs font-bold text-slate-800 mb-1">
                         <span>Password / Clearance PIN</span>
-                        <span className="text-[10px] text-sky-900 font-mono font-bold">
-                          {role === 'doctor' ? 'PIN: 4482 or doctor123' : role === 'admin' ? 'PIN: 9042 or admin123' : 'PIN: 123456 or patient123'}
-                        </span>
                       </label>
                       <div className="relative">
                         <input

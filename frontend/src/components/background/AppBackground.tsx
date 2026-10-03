@@ -74,7 +74,7 @@ export const AppBackground: React.FC<AppBackgroundProps> = ({ config }) => {
       ) : (
         <img
           src={activeUrl}
-          alt="DentiFlow Clinic Background"
+          alt="Oralix Clinic Background"
           referrerPolicy="no-referrer"
           onError={(e) => {
             const target = e.currentTarget as HTMLImageElement;
