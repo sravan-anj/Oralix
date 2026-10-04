@@ -9,7 +9,8 @@ import {
   Invoice,
   InventoryItem,
   StaffMember,
-  User
+  User,
+  TreatmentCatalogueItem
 } from '../types';
 
 export interface DentalServiceOption {
@@ -34,6 +35,15 @@ export const STANDARD_DENTAL_SERVICES: DentalServiceOption[] = [
   { id: 'srv-11', name: 'Emergency Pulp Alleviation & Pain Relief', code: 'D9110', defaultFee: 1200, category: 'Emergency' },
   { id: 'srv-12', name: 'Fiber Post Core Buildup (Tooth Prep)', code: 'D2950', defaultFee: 3500, category: 'Restorative' }
 ];
+
+export const INITIAL_TREATMENT_CATALOGUE: TreatmentCatalogueItem[] = STANDARD_DENTAL_SERVICES.map(s => ({
+  id: s.id,
+  name: s.name,
+  price: s.defaultFee,
+  category: s.category,
+  code: s.code,
+  description: s.name
+}));
 
 export const INITIAL_USERS: User[] = [
   {

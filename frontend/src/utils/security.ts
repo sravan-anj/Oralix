@@ -12,7 +12,8 @@ export const DEFAULT_SECURITY_CREDENTIALS: SecurityCredentials = {
   doctorPin: '4482',
   patientDefaultPin: '123456',
   maxAttemptsBeforeLockout: 3,
-  lockoutDurationSeconds: 30
+  lockoutDurationSeconds: 30,
+  autoLockMinutes: 0
 };
 
 const INITIAL_AUDIT_LOGS: SecurityAuditLog[] = [
@@ -189,6 +190,40 @@ export const SecurityService = {
         success: false,
         message: `Invalid clearance PIN. ${attemptsLeft} attempt(s) remaining before security lockout.`
       };
+    }
+  },
+
+  isTerminalLocked: (): boolean => {
+    try {
+      return localStorage.getItem('dentiflow_terminal_locked') === 'true';
+    } catch {
+      return false;
+    }
+  },
+
+  setTerminalLocked: (locked: boolean, actorName = 'User'): void => {
+    try {
+      if (locked) {
+        localStorage.setItem('dentiflow_terminal_locked', 'true');
+        SecurityService.logEvent({
+          type: 'SECURITY_SETTINGS_UPDATED',
+          actor: actorName,
+          targetRole: 'admin',
+          details: 'Clinical terminal locked manually',
+          status: 'WARNING'
+        });
+      } else {
+        localStorage.removeItem('dentiflow_terminal_locked');
+        SecurityService.logEvent({
+          type: 'PORTAL_ACCESS_GRANTED',
+          actor: actorName,
+          targetRole: 'admin',
+          details: 'Clinical terminal unlocked',
+          status: 'SUCCESS'
+        });
+      }
+    } catch (e) {
+      console.error(e);
     }
   }
 };

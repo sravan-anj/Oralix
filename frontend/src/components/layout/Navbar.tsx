@@ -25,6 +25,7 @@ interface NavbarProps {
   onOpenReceptionist?: () => void;
   onOpenBackgroundManager: () => void;
   onOpenSecurityAudit: () => void;
+  onLockTerminal?: () => void;
   onNavigateToProfile: () => void;
   onOpenEditProfile: () => void;
   onLogout: () => void;
@@ -41,6 +42,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenPortal,
   onOpenReceptionist,
   onOpenSecurityAudit,
+  onLockTerminal,
   onNavigateToProfile,
   onOpenEditProfile,
   onLogout

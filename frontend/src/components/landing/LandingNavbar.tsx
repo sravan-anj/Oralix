@@ -11,12 +11,14 @@ import {
 interface LandingNavbarProps {
   onOpenBooking: () => void;
   onOpenPortal: () => void;
+  onOpenReceptionist?: () => void;
   onNavigateAuth: (mode: 'signin' | 'signup') => void;
 }
 
 export const LandingNavbar: React.FC<LandingNavbarProps> = ({
   onOpenBooking,
   onOpenPortal,
+  onOpenReceptionist,
   onNavigateAuth
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);

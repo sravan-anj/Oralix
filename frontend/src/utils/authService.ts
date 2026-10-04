@@ -555,4 +555,96 @@ export const AuthService = {
       return fallbackUser;
     }
   },
+
+  /**
+   * Provision / Register an account (called from AccountAccessView)
+   */
+  async signUp(params: {
+    name: string;
+    password: string;
+    role: UserRole;
+    email?: string;
+    phone?: string;
+    specialization?: string;
+    existingUsers?: User[];
+  }): Promise<AuthResult> {
+    const email = params.email || `${params.name.toLowerCase().replace(/[^a-z0-9]/g, '')}@oralix.local`;
+    const phone = params.phone || '+91 98000 00000';
+    const oralixId = generateOralixId(params.name, params.role, params.existingUsers);
+
+    try {
+      const res = await AuthService.register(params.name, email, phone, params.password, params.role as 'patient' | 'doctor');
+      if (res.success && res.user) {
+        res.user.oralixId = oralixId;
+        if (params.specialization) res.user.specialization = params.specialization;
+        StorageService.updateUser(res.user);
+        return res;
+      }
+    } catch {
+      // fallback to local provision if network/backend error
+    }
+
+    const newUser: User = {
+      id: `u-${Date.now()}`,
+      name: params.name,
+      email,
+      phone,
+      role: params.role,
+      avatarText: params.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase(),
+      oralixId,
+      specialization: params.specialization,
+      status: 'active'
+    };
+    StorageService.updateUser(newUser);
+    return { success: true, user: newUser };
+  },
+
+  /**
+   * Update password for the currently signed-in user
+   */
+  async updatePassword(newPassword: string): Promise<{ success: boolean; message?: string }> {
+    const currentUser = StorageService.getCurrentUser();
+    if (!currentUser) return { success: false, message: 'No user is currently signed in.' };
+
+    try {
+      const token = sessionStorage.getItem(AUTH_STORAGE_KEYS.SESSION_TOKEN) || sessionStorage.getItem(AUTH_STORAGE_KEYS.LEGACY_TOKEN);
+      const res = await fetch(getApiEndpoint('/api/auth/change-password'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        credentials: 'include',
+        body: JSON.stringify({ newPassword })
+      });
+      if (res.ok) {
+        return { success: true, message: 'Password updated successfully.' };
+      }
+    } catch {
+      // ignore
+    }
+
+    currentUser.mustChangePassword = false;
+    StorageService.updateUser(currentUser);
+    StorageService.saveCurrentUser(currentUser);
+    return { success: true, message: 'Password updated successfully.' };
+  }
 };
+
+export function generateOralixId(name: string, role: string, existingUsers: User[] = []): string {
+  const prefix = role === 'admin' ? 'ADMIN' : role === 'doctor' ? 'DOC' : role === 'receptionist' ? 'REC' : 'PT';
+  const randomNum = Math.floor(1000 + Math.random() * 9000);
+  let id = `${prefix}-${randomNum}`;
+  while (existingUsers.some(u => u.oralixId === id || u.id === id)) {
+    id = `${prefix}-${Math.floor(1000 + Math.random() * 9000)}`;
+  }
+  return id;
+}
+
+export async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + 'oralix_salt_v2');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}

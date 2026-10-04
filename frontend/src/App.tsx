@@ -419,7 +419,8 @@ function MainApp() {
     if (!currentUser || isTerminalLocked) return;
 
     const creds = SecurityService.getCredentials();
-    if (creds.autoLockMinutes <= 0) return;
+    const lockMinutes = creds.autoLockMinutes ?? 0;
+    if (lockMinutes <= 0) return;
 
     let timeoutId: ReturnType<typeof setTimeout>;
 
@@ -428,7 +429,7 @@ function MainApp() {
       timeoutId = setTimeout(() => {
         SecurityService.setTerminalLocked(true, `${currentUser.name} (Idle Auto-Lock)`);
         setIsTerminalLocked(true);
-      }, creds.autoLockMinutes * 60 * 1000);
+      }, lockMinutes * 60 * 1000);
     };
 
     const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];

@@ -208,7 +208,7 @@ class TreatmentCatalogueService {
   public async resetToDefaults(): Promise<TreatmentCatalogueItem[]> {
     StorageService.saveTreatmentCatalogue(INITIAL_TREATMENT_CATALOGUE);
     try {
-      const rows = INITIAL_TREATMENT_CATALOGUE.map(item => ({
+      const rows = INITIAL_TREATMENT_CATALOGUE.map((item: TreatmentCatalogueItem) => ({
         id: item.id,
         name: item.name,
         price: item.price,

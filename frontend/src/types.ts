@@ -6,6 +6,7 @@ export interface User {
   email: string;
   role: UserRole;
   avatarText: string;
+  oralixId?: string;
   phone?: string;
   specialization?: string;
   patientId?: string; // If role is patient, links to patient profile
@@ -16,6 +17,19 @@ export interface User {
   status?: 'active' | 'on_leave' | 'inactive';
   address?: string;
   emergencyContact?: string;
+  mustChangePassword?: boolean;
+}
+
+export interface TreatmentCatalogueItem {
+  id: string;
+  name: string;
+  price: number;
+  category?: string;
+  description?: string;
+  code?: string;
+  estimatedDurationMinutes?: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export type ToothConditionType = 

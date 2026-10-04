@@ -24,4 +24,5 @@ export interface SecurityCredentials {
   patientDefaultPin: string; // default: 123456
   maxAttemptsBeforeLockout: number; // 3
   lockoutDurationSeconds: number; // 30
+  autoLockMinutes?: number; // default: 0 (disabled) or 15
 }

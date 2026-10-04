@@ -88,7 +88,7 @@ export const AccountAccessView: React.FC<AccountAccessViewProps> = ({
       setNewDoctorName('');
       setNewPassword('');
     } else {
-      showToast(res.message || 'Provisioning failed', 'error');
+      showToast(res.error || 'Provisioning failed', 'error');
     }
   };
 

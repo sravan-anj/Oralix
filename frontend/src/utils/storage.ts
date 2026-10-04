@@ -11,7 +11,8 @@ import {
   StaffMember,
   User,
   FinancingRequest,
-  PaymentTransaction
+  PaymentTransaction,
+  TreatmentCatalogueItem
 } from '../types';
 
 const STORAGE_KEYS = {
@@ -28,7 +29,9 @@ const STORAGE_KEYS = {
   INVENTORY: 'dentiflow_inventory_v2',
   STAFF: 'dentiflow_staff_v2',
   FINANCING_REQUESTS: 'dentiflow_financing_requests_v2',
-  TRANSACTIONS: 'dentiflow_transactions_v2'
+  TRANSACTIONS: 'dentiflow_transactions_v2',
+  TREATMENT_CATALOGUE: 'dentiflow_treatment_catalogue_v2',
+  CONSULTATION_FEE: 'dentiflow_consultation_fee_v2'
 };
 
 function safeGet<T>(key: string, fallback: T): T {
@@ -174,6 +177,14 @@ export const StorageService = {
     const existing = StorageService.getTransactions();
     safeSet(STORAGE_KEYS.TRANSACTIONS, [tx, ...existing]);
   },
+
+  // Treatment Catalogue
+  getTreatmentCatalogue: (): TreatmentCatalogueItem[] => safeGet<TreatmentCatalogueItem[]>(STORAGE_KEYS.TREATMENT_CATALOGUE, []),
+  saveTreatmentCatalogue: (items: TreatmentCatalogueItem[]): void => safeSet(STORAGE_KEYS.TREATMENT_CATALOGUE, items),
+
+  // Consultation Fee
+  getConsultationFee: (): number => safeGet<number>(STORAGE_KEYS.CONSULTATION_FEE, 500),
+  saveConsultationFee: (fee: number): void => safeSet(STORAGE_KEYS.CONSULTATION_FEE, fee),
 
   // Reset to initial seed
   resetAll: (): void => {
