@@ -82,14 +82,14 @@ export const LockScreen: React.FC<LockScreenProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-between bg-slate-950/40 text-white select-none overflow-hidden backdrop-blur-xs">
       {/* Background Media Layer */}
-      <div className="absolute inset-0 -z-10 overflow-hidden">
+      <div className="absolute inset-0 -z-10 overflow-hidden w-full h-full min-w-full min-h-full max-w-none max-h-none">
         {isVideo ? (
           <video
             autoPlay
             loop
             muted
             playsInline
-            className="w-full h-full object-cover"
+            className="absolute inset-0 z-0 w-full h-full min-w-full min-h-full max-w-none max-h-none object-cover object-center origin-center scale-[1.14] block"
           >
             <source src={backgroundUrl} type="video/mp4" />
           </video>

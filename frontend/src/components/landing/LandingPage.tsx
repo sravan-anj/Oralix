@@ -11,12 +11,14 @@ import { CtaFooterSection } from './CtaFooterSection';
 interface LandingPageProps {
   onOpenBooking: () => void;
   onOpenPortal: () => void;
+  onOpenReceptionist?: () => void;
   onNavigateAuth: (mode: 'signin' | 'signup') => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   onOpenBooking,
   onOpenPortal,
+  onOpenReceptionist,
   onNavigateAuth
 }) => {
   return (
@@ -28,8 +30,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           loop
           muted
           playsInline
-          className="absolute inset-0 z-0 w-full h-full min-w-full min-h-full max-w-none max-h-none object-cover object-center origin-center scale-[1.10] block filter brightness-[1.14] contrast-[1.08] saturate-[1.12]"
-          poster="/realistic_human_molar.png"
+          className="absolute inset-0 z-0 w-full h-full min-w-full min-h-full max-w-none max-h-none object-cover object-center origin-center scale-[1.14] block filter brightness-[1.14] contrast-[1.08] saturate-[1.12]"
+          poster="/posters/denti-video3.2-poster.webp"
         >
           <source src="/Denti video3.2.mp4" type="video/mp4" />
           <source src="/Denti video3.mp4" type="video/mp4" />
@@ -43,6 +45,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         <LandingNavbar
           onOpenBooking={onOpenBooking}
           onOpenPortal={onOpenPortal}
+          onOpenReceptionist={onOpenReceptionist}
           onNavigateAuth={onNavigateAuth}
         />
 

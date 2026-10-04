@@ -5,14 +5,12 @@ const STORAGE_KEYS = {
   AUDIT_LOGS: 'dentiflow_security_audit_logs_v2',
   FAILED_ATTEMPTS: 'dentiflow_failed_pin_attempts_v2',
   LOCKOUT_EXPIRY: 'dentiflow_lockout_expiry_v2',
-  TERMINAL_LOCKED: 'dentiflow_terminal_locked_v2',
 };
 
 export const DEFAULT_SECURITY_CREDENTIALS: SecurityCredentials = {
   adminPin: '9042',
   doctorPin: '4482',
   patientDefaultPin: '123456',
-  autoLockMinutes: 15, // Auto-locks after 15 min of operatory inactivity
   maxAttemptsBeforeLockout: 3,
   lockoutDurationSeconds: 30
 };
@@ -67,7 +65,7 @@ export const SecurityService = {
       type: 'SECURITY_SETTINGS_UPDATED',
       actor: 'Administrator',
       targetRole: 'admin',
-      details: 'Updated clinic security credentials and auto-lock threshold',
+      details: 'Updated clinic security credentials',
       status: 'SUCCESS'
     });
   },
@@ -150,7 +148,7 @@ export const SecurityService = {
     localStorage.removeItem(STORAGE_KEYS.LOCKOUT_EXPIRY);
   },
 
-  verifyPin: (targetRole: 'doctor' | 'admin' | 'patient', enteredPin: string, actorName = 'User'): { success: boolean; message: string } => {
+  verifyPin: (targetRole: 'doctor' | 'admin', enteredPin: string, actorName = 'User'): { success: boolean; message: string } => {
     const lockout = SecurityService.getLockoutStatus();
     if (lockout.isLockedOut) {
       return {
@@ -167,8 +165,6 @@ export const SecurityService = {
       isMatch = cleanPin === creds.adminPin || cleanPin.toUpperCase() === 'ADMIN-9042';
     } else if (targetRole === 'doctor') {
       isMatch = cleanPin === creds.doctorPin || cleanPin.toUpperCase() === 'DOC-2026' || cleanPin.toUpperCase() === 'DOC-4482';
-    } else if (targetRole === 'patient') {
-      isMatch = cleanPin === creds.patientDefaultPin || cleanPin === '123456';
     }
 
     if (isMatch) {
@@ -194,21 +190,5 @@ export const SecurityService = {
         message: `Invalid clearance PIN. ${attemptsLeft} attempt(s) remaining before security lockout.`
       };
     }
-  },
-
-  // Terminal lock
-  isTerminalLocked: (): boolean => {
-    return localStorage.getItem(STORAGE_KEYS.TERMINAL_LOCKED) === 'true';
-  },
-
-  setTerminalLocked: (locked: boolean, actor = 'Staff'): void => {
-    localStorage.setItem(STORAGE_KEYS.TERMINAL_LOCKED, locked ? 'true' : 'false');
-    SecurityService.logEvent({
-      type: locked ? 'TERMINAL_LOCKED' : 'TERMINAL_UNLOCKED',
-      actor,
-      targetRole: 'system',
-      details: locked ? 'Operatory terminal manually secured / locked' : 'Terminal unlocked with valid clearance PIN',
-      status: locked ? 'WARNING' : 'SUCCESS'
-    });
   }
 };
