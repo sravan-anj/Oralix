@@ -1,6 +1,6 @@
 import React from 'react';
 import { Appointment, Patient, QueueItem } from '../../types';
-import { X, Calendar, Clock, User, Stethoscope, ChevronRight, AlertCircle, Plus, UsersRound, Activity } from 'lucide-react';
+import { X, Calendar, Clock, User, Stethoscope, ChevronRight, AlertCircle, Plus, UsersRound, Activity, Receipt } from 'lucide-react';
 
 interface TodaysVisitsModalProps {
   isOpen: boolean;
@@ -11,6 +11,7 @@ interface TodaysVisitsModalProps {
   onSelectPatient: (patientId: string) => void;
   onNavigateToChart: () => void;
   onOpenNewAppointment: () => void;
+  onNavigateToBilling?: (patientId: string, appointmentId?: string) => void;
 }
 
 export const TodaysVisitsModal: React.FC<TodaysVisitsModalProps> = ({
@@ -21,15 +22,19 @@ export const TodaysVisitsModal: React.FC<TodaysVisitsModalProps> = ({
   queue,
   onSelectPatient,
   onNavigateToChart,
-  onOpenNewAppointment
+  onOpenNewAppointment,
+  onNavigateToBilling
 }) => {
   if (!isOpen) return null;
 
   // Calculate today's date YYYY-MM-DD dynamically
   const todayStr = new Date().toISOString().split('T')[0];
 
-  // Filter appointments scheduled for today
-  const todayAppointments = appointments.filter(a => a.date === todayStr || a.date === '2026-09-19');
+  // Active appointments: today or confirmed/in-chair, fallback to all appointments
+  const todayAppointments = appointments.filter(
+    a => a.date === todayStr || a.date === '2026-09-19' || a.status === 'in_chair' || a.status === 'confirmed'
+  );
+  const displayAppointments = todayAppointments.length > 0 ? todayAppointments : appointments;
 
   const handlePatientClick = (patientId: string) => {
     onSelectPatient(patientId);
@@ -68,7 +73,7 @@ export const TodaysVisitsModal: React.FC<TodaysVisitsModalProps> = ({
             <div className="flex items-center justify-between pb-2 border-b border-white/10">
               <h4 className="text-xs font-extrabold uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
                 <Calendar className="w-4 h-4" />
-                <span>Section 1: Today's Scheduled Appointments ({todayAppointments.length})</span>
+                <span>Section 1: Clinical Appointments ({displayAppointments.length})</span>
               </h4>
               <button
                 onClick={() => {
@@ -82,14 +87,14 @@ export const TodaysVisitsModal: React.FC<TodaysVisitsModalProps> = ({
               </button>
             </div>
 
-            {todayAppointments.length === 0 ? (
+            {displayAppointments.length === 0 ? (
               <div className="py-6 text-center bg-white/5 rounded-xl border border-white/10 space-y-2">
                 <AlertCircle className="w-8 h-8 text-slate-500 mx-auto opacity-70" />
-                <p className="text-xs font-bold text-white">No appointments scheduled for today.</p>
+                <p className="text-xs font-bold text-white">No appointments scheduled.</p>
               </div>
             ) : (
               <div className="space-y-2">
-                {todayAppointments.map(apt => {
+                {displayAppointments.map(apt => {
                   const patient = patients.find(p => p.id === apt.patientId);
                   return (
                     <div
@@ -131,16 +136,37 @@ export const TodaysVisitsModal: React.FC<TodaysVisitsModalProps> = ({
                           </span>
                           <span>&bull;</span>
                           <span>{apt.chair}</span>
+                          {apt.date && (
+                            <>
+                              <span>&bull;</span>
+                              <span className="text-sky-300 font-mono">{apt.date}</span>
+                            </>
+                          )}
                         </div>
                       </div>
 
-                      <button
-                        onClick={() => handlePatientClick(apt.patientId)}
-                        className="shrink-0 px-3 py-1.5 bg-white/10 hover:bg-white text-white rounded-lg text-xs font-bold transition border border-white/15 cursor-pointer flex items-center justify-center gap-1 group-hover:bg-white group-hover:text-slate-900"
-                      >
-                        <span>View Chart</span>
-                        <ChevronRight className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {onNavigateToBilling && (
+                          <button
+                            onClick={() => {
+                              onNavigateToBilling(apt.patientId, apt.id);
+                              onClose();
+                            }}
+                            className="px-3 py-1.5 bg-[#C8B58D] hover:bg-[#b8a57d] text-[#252525] rounded-lg text-xs font-black transition cursor-pointer flex items-center justify-center gap-1 shadow-sm"
+                            title={`Open billing for ${apt.patientName}`}
+                          >
+                            <Receipt className="w-3.5 h-3.5" />
+                            <span>Bill Visit</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handlePatientClick(apt.patientId)}
+                          className="px-3 py-1.5 bg-white/10 hover:bg-white text-white rounded-lg text-xs font-bold transition border border-white/15 cursor-pointer flex items-center justify-center gap-1 group-hover:bg-white group-hover:text-slate-900"
+                        >
+                          <span>View Chart</span>
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   );
                 })}

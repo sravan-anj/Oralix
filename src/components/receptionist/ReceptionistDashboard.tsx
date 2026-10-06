@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Invoice, Patient } from '../../types';
 import {
   Building,
@@ -17,12 +17,15 @@ import {
   Filter,
   Receipt,
   User,
-  ShieldCheck
+  ShieldCheck,
+  RefreshCw
 } from 'lucide-react';
 import { downloadTaxInvoicePdfBlob } from '../../utils/pdfGenerator';
 import { InvoiceDetailsModal } from './InvoiceDetailsModal';
 import { ReceptionistPaymentModal } from './ReceptionistPaymentModal';
 import { useToast } from '../common/Toast';
+import { supabase } from '../../utils/supabaseClient';
+import { mapRowToInvoice } from '../../utils/storage';
 
 interface ReceptionistDashboardProps {
   invoices: Invoice[];
@@ -46,6 +49,58 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'outstanding'>('all');
   const [selectedInvoiceForDetails, setSelectedInvoiceForDetails] = useState<Invoice | null>(null);
   const [selectedInvoiceForPayment, setSelectedInvoiceForPayment] = useState<Invoice | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Authoritative fetch directly from Supabase invoices table
+  const fetchAuthoritativeInvoices = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const { data, error } = await supabase
+        .from('invoices')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        const canonicalBills = data.map(mapRowToInvoice);
+        onSaveInvoices(canonicalBills);
+      }
+    } catch (err) {
+      console.error('[Receptionist] Failed to fetch invoices from Supabase:', err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [onSaveInvoices]);
+
+  // Initial mount fetch and Supabase Realtime channel subscription
+  useEffect(() => {
+    let isMounted = true;
+    fetchAuthoritativeInvoices();
+
+    const receptionistChannel = supabase
+      .channel('receptionist-invoices-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'invoices'
+        },
+        (payload: any) => {
+          if (!isMounted) return;
+          console.log('[Receptionist Realtime] postgres_changes:', payload.eventType, payload);
+          // Re-fetch authoritative ordered list immediately
+          fetchAuthoritativeInvoices();
+        }
+      )
+      .subscribe((status: string) => {
+        console.log('[Receptionist Realtime] Invoices channel status:', status);
+      });
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(receptionistChannel);
+    };
+  }, [fetchAuthoritativeInvoices]);
 
   // Financial KPIs
   const kpis = useMemo(() => {
@@ -156,6 +211,17 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
 
           {/* Action Navigation */}
           <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={fetchAuthoritativeInvoices}
+              disabled={isRefreshing}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#252525] bg-[#EDE8DE] hover:bg-[#C8B58D] rounded-xl border border-[#C8B58D]/40 transition cursor-pointer disabled:opacity-50"
+              title="Fetch latest bills directly from Supabase"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-[#252525] ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{isRefreshing ? 'Syncing...' : 'Refresh Ledger'}</span>
+            </button>
+
             <button
               type="button"
               onClick={onNavigateHome}
@@ -353,10 +419,20 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
                       <tr key={inv.id} className="hover:bg-[#FAF8F5]/80 transition-colors">
                         {/* 1. Invoice # */}
                         <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono font-bold text-[#1E1E1E] text-xs">
-                              {inv.invoiceNumber}
-                            </span>
+                          <div className="flex flex-col gap-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono font-bold text-[#1E1E1E] text-xs">
+                                {inv.invoiceNumber}
+                              </span>
+                              {inv.appointmentId && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-[#EDE8DE] text-[#252525] border border-[#C8B58D]/30"
+                                  title={`Linked to Appointment: ${inv.appointmentId}`}
+                                >
+                                  Appt #{inv.appointmentId.slice(-6)}
+                                </span>
+                              )}
+                            </div>
                             {inv.date && (
                               <span className="text-[10px] text-stone-400 block font-normal">
                                 {inv.date}

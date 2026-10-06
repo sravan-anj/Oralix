@@ -1,6 +1,6 @@
 import React from 'react';
 import { Appointment, QueueItem, Patient } from '../../types';
-import { X, Activity, User, Clock, Stethoscope, Hash, MapPin, AlertCircle, Plus } from 'lucide-react';
+import { X, Activity, User, Clock, Stethoscope, Hash, MapPin, AlertCircle, Plus, Receipt } from 'lucide-react';
 
 interface ChairData {
   chairId: string;
@@ -18,6 +18,7 @@ interface OperatoryChairModalProps {
   onSelectPatient: (patientId: string) => void;
   onNavigateToChart: () => void;
   onOpenNewAppointment: () => void;
+  onNavigateToBilling?: (patientId: string, appointmentId?: string) => void;
 }
 
 export const OperatoryChairModal: React.FC<OperatoryChairModalProps> = ({
@@ -26,7 +27,8 @@ export const OperatoryChairModal: React.FC<OperatoryChairModalProps> = ({
   chairData,
   onSelectPatient,
   onNavigateToChart,
-  onOpenNewAppointment
+  onOpenNewAppointment,
+  onNavigateToBilling
 }) => {
   if (!isOpen || !chairData) return null;
 
@@ -127,14 +129,28 @@ export const OperatoryChairModal: React.FC<OperatoryChairModalProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleViewPatientChart}
-                  className="flex-1 py-2.5 px-4 bg-white text-slate-900 hover:bg-slate-100 font-black text-xs rounded-xl transition shadow-md cursor-pointer flex items-center justify-center gap-2"
+                  className="flex-1 py-2.5 px-3 bg-white text-slate-900 hover:bg-slate-100 font-black text-xs rounded-xl transition shadow-md cursor-pointer flex items-center justify-center gap-1.5"
                 >
                   <Stethoscope className="w-4 h-4 text-sky-700" />
-                  <span>Open 3D Dental Chart</span>
+                  <span>3D Chart</span>
                 </button>
+                {onNavigateToBilling && (appointment?.patientId || queueItem?.patientId) && (
+                  <button
+                    onClick={() => {
+                      const pid = appointment?.patientId || queueItem?.patientId!;
+                      const aid = appointment?.id;
+                      onNavigateToBilling(pid, aid);
+                      onClose();
+                    }}
+                    className="flex-1 py-2.5 px-3 bg-[#C8B58D] hover:bg-[#b8a57d] text-[#252525] font-black text-xs rounded-xl transition shadow-md cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    <Receipt className="w-4 h-4 text-[#252525]" />
+                    <span>Open Bill</span>
+                  </button>
+                )}
                 <button
                   onClick={onClose}
-                  className="py-2.5 px-4 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition border border-white/15 cursor-pointer"
+                  className="py-2.5 px-3 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl transition border border-white/15 cursor-pointer"
                 >
                   Close
                 </button>

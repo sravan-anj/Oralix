@@ -14,11 +14,47 @@ export interface RazorpayOrderResponse {
   created_at: number;
 }
 
+/**
+ * Safely sanitizes patient data fields for Razorpay Checkout prefill.
+ * Handles null, undefined, empty string, and whitespace-only values safely.
+ * Returns trimmed string or '' without hardcoding or using fallbacks.
+ */
+export function cleanPrefillValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value !== 'string') return '';
+  return value.trim();
+}
+
+export interface RazorpayCheckoutOptions {
+  orderId: string;
+  amountInPaise: number;
+  currency?: string;
+  keyId?: string;
+  name?: string;
+  description?: string;
+  invoiceNumber?: string;
+  patientName?: string;
+  patientEmail?: string;
+  patientPhone?: string;
+  patient?: {
+    name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  } | null;
+  onSuccess: (response: {
+    razorpay_payment_id: string;
+    razorpay_order_id: string;
+    razorpay_signature: string;
+  }) => void;
+  onDismiss?: () => void;
+  onFailure?: (error: any) => void;
+}
+
 export interface PaymentVerificationRequest {
   invoiceId: string;
   patientId: string;
   amount: number;
-  paymentMethod: 'QR Payment' | 'UPI' | 'Debit Card' | 'Credit Card' | 'Cash' | 'Insurance';
+  paymentMethod: 'Razorpay' | 'QR Payment' | 'UPI' | 'Debit Card' | 'Credit Card' | 'Cash' | 'Insurance';
   transactionRef: string;
   razorpayOrderId?: string;
   razorpayPaymentId?: string;
@@ -36,11 +72,27 @@ export interface GatewayConfigStatus {
 
 class PaymentService {
   /**
+   * Helper to construct safe Razorpay prefill options for a patient record.
+   * Ensures phone and email are strictly derived from the patient associated with the bill,
+   * without fallbacks to clinic or staff contact info.
+   */
+  public buildRazorpayPrefill(
+    patient?: { name?: string | null; email?: string | null; phone?: string | null } | null,
+    fallbackName?: string
+  ): { name: string; email: string; contact: string } {
+    return {
+      name: cleanPrefillValue(patient?.name) || cleanPrefillValue(fallbackName),
+      email: cleanPrefillValue(patient?.email),
+      contact: cleanPrefillValue(patient?.phone)
+    };
+  }
+
+  /**
    * Inspects environment configuration for Razorpay credentials.
    */
   public getGatewayConfigStatus(): GatewayConfigStatus {
-    const keyId = (import.meta as any).env?.VITE_RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID;
-    const isConfigured = Boolean(keyId && keyId.trim().length > 0 && !keyId.includes('MY_KEY'));
+    const keyId = (import.meta as any).env?.VITE_RAZORPAY_KEY_ID || (process.env as any)?.VITE_RAZORPAY_KEY_ID;
+    const isConfigured = Boolean(keyId && keyId.trim().length > 0 && !keyId.includes('YOUR_RAZORPAY_KEY'));
 
     return {
       isConfigured: isConfigured,
@@ -61,10 +113,179 @@ class PaymentService {
     return new Promise((resolve) => {
       const script = document.createElement('script');
       script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      script.async = true;
       script.onload = () => resolve(true);
       script.onerror = () => resolve(false);
       document.head.appendChild(script);
     });
+  }
+
+  /**
+   * STEP 1: Calls backend endpoint POST /api/create-order
+   */
+  public async createRazorpayOrderApi(
+    amountInPaise: number,
+    currency = 'INR',
+    receipt?: string,
+    billId?: string
+  ): Promise<{ order_id: string; id: string; amount: number; currency: string; receipt?: string; key_id?: string }> {
+    if (amountInPaise < 100) {
+      throw new Error('Amount must be at least 100 paise (₹1.00).');
+    }
+
+    const res = await fetch('/api/create-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bill_id: billId,
+        amount: Math.round(amountInPaise),
+        currency: currency.toUpperCase(),
+        receipt
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok || (!data.success && !data.order_id)) {
+      throw new Error(data.error || 'Failed to create Razorpay order on server.');
+    }
+
+    return data;
+  }
+
+  /**
+   * STEP 3: Calls backend endpoint POST /api/verify-payment
+   */
+  public async verifyRazorpayPaymentApi(payload: {
+    razorpay_order_id: string;
+    razorpay_payment_id: string;
+    razorpay_signature: string;
+    bill_id?: string;
+  }): Promise<{
+    success: boolean;
+    payment_verified?: boolean;
+    payment_status?: string;
+    message: string;
+    order_id: string;
+    payment_id: string;
+    bill_id?: string;
+    invoice_number?: string;
+    receipt_email_status?: 'pending' | 'sent' | 'failed' | 'skipped';
+    receipt_email?: string | null;
+    receipt_email_error?: string | null;
+    receipt_filename?: string;
+    already_verified?: boolean;
+  }> {
+    const res = await fetch('/api/verify-payment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Payment verification failed: Signature mismatch.');
+    }
+
+    return data;
+  }
+
+  /**
+   * Calls backend to safely retry delivering the receipt email for a verified bill
+   */
+  public async retryReceiptEmailApi(billId: string): Promise<{
+    success: boolean;
+    receipt_email_status: 'sent' | 'failed' | 'skipped';
+    receipt_email?: string | null;
+    error?: string | null;
+    message: string;
+  }> {
+    const res = await fetch('/api/retry-receipt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bill_id: billId })
+    });
+
+    const data = await res.json();
+    if (!res.ok && !data.receipt_email_status) {
+      throw new Error(data.error || 'Failed to resend receipt email.');
+    }
+
+    return data;
+  }
+
+  /**
+   * STEP 2: Opens Razorpay Standard Checkout modal with options
+   */
+  public async openRazorpayCheckout(options: RazorpayCheckoutOptions): Promise<void> {
+    const isLoaded = await this.loadRazorpayScript();
+    if (!isLoaded || typeof (window as any).Razorpay === 'undefined') {
+      throw new Error('Razorpay Checkout SDK is not available. Please check your internet connection.');
+    }
+
+    const keyId =
+      options.keyId ||
+      (import.meta as any).env?.VITE_RAZORPAY_KEY_ID ||
+      (process.env as any)?.VITE_RAZORPAY_KEY_ID;
+
+    // Safe diagnostic check without logging secret or exposing sensitive keys
+    console.log('Razorpay frontend key exists:', Boolean(keyId));
+
+    if (!keyId) {
+      throw new Error('Razorpay Key ID is not configured. Please set VITE_RAZORPAY_KEY_ID in .env');
+    }
+
+    // Resolve patient details safely from the current bill's patient record
+    const patientName = cleanPrefillValue(options.patient?.name ?? options.patientName);
+    const patientEmail = cleanPrefillValue(options.patient?.email ?? options.patientEmail);
+    const patientContact = cleanPrefillValue(options.patient?.phone ?? options.patientPhone);
+
+    const rzpOptions: any = {
+      key: keyId,
+      amount: options.amountInPaise,
+      currency: options.currency || 'INR',
+      name: options.name || 'Oralix · Advanced Dental Care',
+      description: options.description || `Invoice #${options.invoiceNumber || ''} Settlement`,
+      order_id: options.orderId,
+      image: '/gemini_shared_tooth.png',
+      handler: (response: any) => {
+        options.onSuccess({
+          razorpay_payment_id: response.razorpay_payment_id,
+          razorpay_order_id: response.razorpay_order_id,
+          razorpay_signature: response.razorpay_signature
+        });
+      },
+      prefill: {
+        name: patientName,
+        email: patientEmail,
+        contact: patientContact
+      },
+      theme: {
+        color: '#3B4D3A'
+      },
+      modal: {
+        ondismiss: () => {
+          if (options.onDismiss) {
+            options.onDismiss();
+          }
+        }
+      }
+    };
+
+    console.log('[Razorpay Prefill Options]:', rzpOptions.prefill);
+    if (typeof window !== 'undefined') {
+      (window as any).__lastRazorpayOptions = rzpOptions;
+    }
+
+    const rzp = new (window as any).Razorpay(rzpOptions);
+
+    rzp.on('payment.failed', (response: any) => {
+      console.error('Razorpay payment failed:', response.error);
+      if (options.onFailure) {
+        options.onFailure(response.error);
+      }
+    });
+
+    rzp.open();
   }
 
   /**

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { StorageService } from './utils/storage';
+import { StorageService, mapRowToInvoice, mapRowToAppointment, STORAGE_KEYS } from './utils/storage';
 import { supabase } from './utils/supabaseClient';
 import { AuthService } from './utils/authService';
 import { BackgroundStorage } from './utils/backgroundStorage';
@@ -166,15 +166,147 @@ function MainApp() {
       if (data.toothFindings?.length) setToothFindings(data.toothFindings);
       if (data.treatmentPlans?.length) setTreatmentPlans(data.treatmentPlans);
       if (data.clinicalNotes?.length) setClinicalNotes(data.clinicalNotes);
-      if (data.invoices?.length) setInvoices(data.invoices);
+      if (Array.isArray(data.invoices)) {
+        setInvoices(data.invoices);
+        StorageService.safeSetInvoices(data.invoices);
+      }
       if (data.inventory?.length) setInventory(data.inventory);
       if (data.staff?.length) setStaff(data.staff);
       if (data.queue?.length) setQueue(data.queue);
     });
 
+    // Supabase Realtime: Subscribe to authoritative changes on the canonical `invoices` table
+    const invoicesChannel = supabase
+      .channel('canonical-invoices-sync')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'invoices'
+        },
+        (payload: any) => {
+          if (!isMounted) return;
+          console.log('[Supabase Realtime] Invoices postgres_change:', payload.eventType, payload);
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const rowInvoice = mapRowToInvoice(payload.new);
+            setInvoices(prev => {
+              const idx = prev.findIndex(
+                i => i.id === rowInvoice.id || (rowInvoice.invoiceNumber && i.invoiceNumber === rowInvoice.invoiceNumber)
+              );
+              let next: Invoice[];
+              if (idx >= 0) {
+                next = [...prev];
+                next[idx] = { ...next[idx], ...rowInvoice };
+              } else {
+                next = [rowInvoice, ...prev];
+              }
+              StorageService.safeSetInvoices(next);
+              return next;
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const delId = payload.old?.id;
+            const delInvoiceNum = payload.old?.invoice_number;
+            setInvoices(prev => {
+              const next = prev.filter(i => (delId ? i.id !== delId : true) && (delInvoiceNum ? i.invoiceNumber !== delInvoiceNum : true));
+              StorageService.safeSetInvoices(next);
+              return next;
+            });
+          }
+        }
+      )
+      .subscribe((status: string) => {
+        console.log('[Supabase Realtime] Invoices sync channel status:', status);
+      });
+
+    // Supabase Realtime: Subscribe to authoritative changes on the canonical `appointments` table
+    const appointmentsChannel = supabase
+      .channel('canonical-appointments-sync')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'appointments'
+        },
+        (payload: any) => {
+          if (!isMounted) return;
+          console.log('[Supabase Realtime] Appointments postgres_change:', payload.eventType, payload);
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const rowApt = mapRowToAppointment(payload.new);
+            setAppointments(prev => {
+              const idx = prev.findIndex(a => a.id === rowApt.id);
+              let next: Appointment[];
+              if (idx >= 0) {
+                next = [...prev];
+                next[idx] = { ...next[idx], ...rowApt };
+              } else {
+                next = [rowApt, ...prev];
+              }
+              StorageService.safeSetAppointments(next);
+              return next;
+            });
+          } else if (payload.eventType === 'DELETE') {
+            const delId = payload.old?.id;
+            setAppointments(prev => {
+              const next = prev.filter(a => a.id !== delId);
+              StorageService.safeSetAppointments(next);
+              return next;
+            });
+          }
+        }
+      )
+      .subscribe((status: string) => {
+        console.log('[Supabase Realtime] Appointments sync channel status:', status);
+      });
+
+    // Instant local cross-tab / window synchronization
+    const handleStorageChange = (e: StorageEvent) => {
+      if (!isMounted) return;
+      if (e.key === STORAGE_KEYS.INVOICES && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) {
+            setInvoices(parsed);
+          }
+        } catch (_) {}
+      }
+      if (e.key === STORAGE_KEYS.APPOINTMENTS && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (Array.isArray(parsed)) {
+            setAppointments(parsed);
+          }
+        } catch (_) {}
+      }
+    };
+
+    const handleCustomInvoicesEvent = (e: any) => {
+      if (!isMounted) return;
+      if (Array.isArray(e.detail)) {
+        setInvoices(e.detail);
+      }
+    };
+
+    const handleCustomAppointmentsEvent = (e: any) => {
+      if (!isMounted) return;
+      if (Array.isArray(e.detail)) {
+        setAppointments(e.detail);
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('dentiflow:invoices-updated', handleCustomInvoicesEvent as EventListener);
+    window.addEventListener('dentiflow:appointments-updated', handleCustomAppointmentsEvent as EventListener);
+
     return () => {
       isMounted = false;
       authListener?.subscription?.unsubscribe();
+      supabase.removeChannel(invoicesChannel);
+      supabase.removeChannel(appointmentsChannel);
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('dentiflow:invoices-updated', handleCustomInvoicesEvent as EventListener);
+      window.removeEventListener('dentiflow:appointments-updated', handleCustomAppointmentsEvent as EventListener);
     };
   }, []);
 
@@ -405,6 +537,24 @@ function MainApp() {
     }
     setAppointments(updated);
     StorageService.saveAppointments(updated);
+  };
+
+  const handleDeleteAppointmentAndPatient = async (appointmentId: string, patientId: string) => {
+    try {
+      await StorageService.deleteAppointmentAndPatient(appointmentId, patientId);
+      setAppointments(prev => prev.filter(a => a.id !== appointmentId));
+      if (patientId) {
+        setPatients(prev => prev.filter(p => p.id !== patientId));
+        setQueue(prev => prev.filter(q => q.patientId !== patientId));
+        setInvoices(prev => prev.filter(inv => inv.patientId !== patientId && inv.appointmentId !== appointmentId));
+        setToothFindings(prev => prev.filter(tf => tf.patientId !== patientId));
+        setTreatmentPlans(prev => prev.filter(tp => tp.patientId !== patientId));
+        setClinicalNotes(prev => prev.filter(cn => cn.patientId !== patientId));
+      }
+      showToast('Appointment and associated patient data permanently deleted from database.', 'info');
+    } catch (err: any) {
+      showToast(err?.message || 'Failed to delete appointment from database.', 'error');
+    }
   };
 
   const handleSavePatients = (updated: Patient[]) => {
@@ -733,6 +883,9 @@ function MainApp() {
               onNavigate={handleNavigateTab}
               onOpenNewAppointment={() => setIsBookingModalOpen(true)}
               onSelectPatient={id => setSelectedPatientId(id)}
+              onNavigateToBilling={handleNavigateToPatientBill}
+              onSaveAppointments={handleSaveAppointments}
+              onDeleteAppointmentAndPatient={handleDeleteAppointmentAndPatient}
             />
           )}
 
@@ -753,7 +906,9 @@ function MainApp() {
               currentUser={currentUser}
               appointments={appointments}
               patients={patients}
+              invoices={invoices}
               onSaveAppointments={handleSaveAppointments}
+              onDeleteAppointmentAndPatient={handleDeleteAppointmentAndPatient}
               onSelectPatient={id => setSelectedPatientId(id)}
               onNavigateToChart={() => handleNavigateTab('chart')}
               onNavigateToBilling={handleNavigateToPatientBill}
@@ -901,14 +1056,15 @@ function MainApp() {
         currentUserRole={currentUser.role}
       />
 
-      {/* Public Online Booking Modal - Patient Context Only */}
-      {isBookingModalOpen && currentUser?.role === 'patient' && (
+      {/* Public Online Booking Modal */}
+      {isBookingModalOpen && (
         <PublicBookingModal
           isOpen={isBookingModalOpen}
           onClose={() => setIsBookingModalOpen(false)}
           existingPatients={patients}
-          onBookAppointment={newApt => {
-            handleSaveAppointments([newApt, ...appointments]);
+          currentUser={currentUser}
+          onBookAppointment={async (savedApt) => {
+            setAppointments(prev => [savedApt, ...prev.filter(a => a.id !== savedApt.id)]);
           }}
         />
       )}

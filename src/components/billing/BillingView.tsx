@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Invoice, Patient, User, InvoiceStatus, PaymentTransaction, PaymentState, Appointment, TreatmentPlan } from '../../types';
 import { useToast } from '../common/Toast';
-import { StorageService } from '../../utils/storage';
+import { supabase } from '../../utils/supabaseClient';
+import { StorageService, mapRowToAppointment, mapRowToInvoice } from '../../utils/storage';
 import { downloadTaxInvoicePdfBlob } from '../../utils/pdfGenerator';
-import { paymentService } from '../../utils/paymentService';
+import { paymentService, cleanPrefillValue } from '../../utils/paymentService';
 import { PatientBillView } from './PatientBillView';
 import { BillingDatePickerPopover } from './BillingDatePickerPopover';
+import { billingService } from '../../utils/billingService';
 import {
   CreditCard,
   Plus,
@@ -40,7 +42,8 @@ import {
   Trash2,
   Calendar,
   CalendarDays,
-  Filter
+  Filter,
+  Edit3
 } from 'lucide-react';
 
 interface BillingViewProps {
@@ -172,7 +175,7 @@ export const BillingView: React.FC<BillingViewProps> = ({
   const [isAddInvoiceModalOpen, setIsAddInvoiceModalOpen] = useState(false);
   const [selectedInvoiceForPayment, setSelectedInvoiceForPayment] = useState<Invoice | null>(null);
   const [paymentAmount, setPaymentAmount] = useState<number>(0);
-  const [paymentMethod, setPaymentMethod] = useState<'UPI / QR' | 'Credit Card' | 'Debit Card' | 'Net Banking' | 'Wallet'>('UPI / QR');
+  const [paymentMethod, setPaymentMethod] = useState<'Razorpay' | 'UPI / QR' | 'Credit Card' | 'Debit Card' | 'Net Banking' | 'Wallet'>('Razorpay');
   const [lastCompletedTxId, setLastCompletedTxId] = useState<string>('');
 
   // Active Patient Bill Focus View State
@@ -185,47 +188,184 @@ export const BillingView: React.FC<BillingViewProps> = ({
   const [highlightedInvoiceId, setHighlightedInvoiceId] = useState<string | null>(null);
   const consumedTargetKeysRef = useRef<Set<string>>(new Set());
 
-  // Sync with target patient when navigated from external sections (e.g. Appointments)
+  // Sync with target patient / appointment when navigated from external sections (e.g. Appointments or Doctor Dashboard)
   useEffect(() => {
-    if (!targetPatientId) return;
+    if (!targetPatientId && !targetAppointmentId) return;
 
-    const targetKey = `${targetPatientId}-${targetAppointmentId || ''}`;
+    const targetKey = `${targetPatientId || ''}-${targetAppointmentId || ''}`;
     if (consumedTargetKeysRef.current.has(targetKey)) {
       return;
     }
     consumedTargetKeysRef.current.add(targetKey);
 
-    const pt =
-      patients.find(p => p.id === targetPatientId) ||
-      patients.find(p => p.name.toLowerCase() === targetPatientId.toLowerCase()) ||
-      null;
+    let isMounted = true;
 
-    if (pt) {
-      const existingInv =
-        invoices.find(
-          i => (targetAppointmentId && i.appointmentId === targetAppointmentId) || i.patientId === pt.id
-        ) || null;
+    const resolveTargetBillingContext = async () => {
+      let targetApt: Appointment | null = null;
+      let targetPatient: Patient | null = null;
+      let existingInvoice: Invoice | null = null;
 
       const allApts = appointments || StorageService.getAppointments();
-      const apt =
-        allApts.find(
-          a =>
-            (targetAppointmentId && a.id === targetAppointmentId) ||
-            a.patientId === pt.id ||
-            a.patientName.toLowerCase() === pt.name.toLowerCase()
-        ) || null;
 
-      setActiveBillPatient({
-        patient: pt,
-        invoice: existingInv,
-        appointment: apt
-      });
-    }
+      // 1. If targetAppointmentId is provided, resolve from that exact appointment
+      if (targetAppointmentId) {
+        targetApt = allApts.find(a => a.id === targetAppointmentId) || null;
+        if (!targetApt) {
+          try {
+            const { data: dbApt } = await supabase
+              .from('appointments')
+              .select('*')
+              .eq('id', targetAppointmentId)
+              .maybeSingle();
+            if (dbApt) {
+              targetApt = mapRowToAppointment(dbApt);
+            }
+          } catch (err) {
+            console.error('[BillingView] Failed to fetch appointment from Supabase:', err);
+          }
+        }
 
-    if (onClearTargetPatient) {
-      onClearTargetPatient();
-    }
-  }, [targetPatientId, targetAppointmentId, patients, appointments, onClearTargetPatient]);
+        if (targetApt) {
+          // Latch onto any existing invoice for this appointment
+          existingInvoice =
+            invoices.find(i => i.appointmentId === targetAppointmentId) || null;
+          if (!existingInvoice) {
+            try {
+              const { data: dbInv } = await supabase
+                .from('invoices')
+                .select('*')
+                .eq('appointment_id', targetAppointmentId)
+                .maybeSingle();
+              if (dbInv) {
+                existingInvoice = mapRowToInvoice(dbInv);
+              }
+            } catch (err) {
+              console.error('[BillingView] Failed to fetch invoice for appointment:', err);
+            }
+          }
+
+          // Resolve patient from database or memory
+          let ptRecord: any = null;
+          if (targetApt.patientId && targetApt.patientId !== 'p-1') {
+            ptRecord = patients.find(p => p.id === targetApt!.patientId) || null;
+            if (!ptRecord) {
+              try {
+                const { data: dbPt } = await supabase
+                  .from('patients')
+                  .select('*')
+                  .eq('id', targetApt.patientId)
+                  .maybeSingle();
+                ptRecord = dbPt;
+              } catch (_) {}
+            }
+          }
+
+          if (!ptRecord && targetApt.patientEmail) {
+            ptRecord =
+              patients.find(p => p.email?.toLowerCase() === targetApt!.patientEmail?.toLowerCase()) || null;
+            if (!ptRecord) {
+              try {
+                const { data: dbPt } = await supabase
+                  .from('patients')
+                  .select('*')
+                  .eq('email', targetApt.patientEmail)
+                  .maybeSingle();
+                ptRecord = dbPt;
+              } catch (_) {}
+            }
+          }
+
+          if (!ptRecord && targetApt.patientPhone) {
+            ptRecord = patients.find(p => p.phone === targetApt!.patientPhone) || null;
+            if (!ptRecord) {
+              try {
+                const { data: dbPt } = await supabase
+                  .from('patients')
+                  .select('*')
+                  .eq('phone', targetApt.patientPhone)
+                  .maybeSingle();
+                ptRecord = dbPt;
+              } catch (_) {}
+            }
+          }
+
+          targetPatient = {
+            id: (ptRecord && ptRecord.id !== 'p-1')
+              ? ptRecord.id
+              : (targetApt.patientId && targetApt.patientId !== 'p-1' ? targetApt.patientId : `p-${targetApt.id}`),
+            code: ptRecord?.code || targetApt.tokenNumber || `DF-${new Date().getFullYear()}-${targetApt.id.slice(-4).toUpperCase()}`,
+            name: targetApt.patientName || ptRecord?.name || 'Patient',
+            age: ptRecord?.age || 32,
+            gender: (ptRecord?.gender as any) || 'Male',
+            phone: targetApt.patientPhone || ptRecord?.phone || '',
+            email: targetApt.patientEmail || ptRecord?.email || '',
+            bloodGroup: ptRecord?.blood_group || 'O+',
+            medicalAlerts: Array.isArray(ptRecord?.medical_alerts) ? ptRecord.medical_alerts : [],
+            balanceDue: ptRecord?.balance_due || 0
+          };
+        }
+      }
+
+      // 2. If no appointment target or appointment resolution didn't yield a patient, try targetPatientId
+      if (!targetPatient && targetPatientId) {
+        let pt =
+          patients.find(p => p.id === targetPatientId) ||
+          patients.find(p => p.name.toLowerCase() === targetPatientId.toLowerCase()) ||
+          null;
+
+        if (!pt) {
+          try {
+            const { data: dbPt } = await supabase
+              .from('patients')
+              .select('*')
+              .eq('id', targetPatientId)
+              .maybeSingle();
+            if (dbPt) {
+              pt = {
+                id: dbPt.id,
+                code: dbPt.code || 'DF-PAT',
+                name: dbPt.name,
+                age: dbPt.age || 32,
+                gender: dbPt.gender || 'Male',
+                phone: dbPt.phone || '',
+                email: dbPt.email || '',
+                bloodGroup: dbPt.blood_group || 'O+',
+                medicalAlerts: Array.isArray(dbPt.medical_alerts) ? dbPt.medical_alerts : [],
+                balanceDue: dbPt.balance_due || 0
+              };
+            }
+          } catch (_) {}
+        }
+
+        if (pt) {
+          targetPatient = pt;
+          targetApt =
+            allApts.find(a => a.patientId === pt.id || a.patientName.toLowerCase() === pt.name.toLowerCase()) ||
+            null;
+          existingInvoice =
+            invoices.find(i => i.patientId === pt.id) || null;
+        }
+      }
+
+      if (isMounted && targetPatient) {
+        setActiveBillPatient({
+          patient: targetPatient,
+          invoice: existingInvoice,
+          appointment: targetApt
+        });
+      }
+
+      if (onClearTargetPatient) {
+        onClearTargetPatient();
+      }
+    };
+
+    resolveTargetBillingContext();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [targetPatientId, targetAppointmentId, patients, appointments, invoices, onClearTargetPatient]);
   
   // Method-Specific Transaction Fields
   const [utrNumber, setUtrNumber] = useState(''); // UPI / QR UTR
@@ -244,12 +384,31 @@ export const BillingView: React.FC<BillingViewProps> = ({
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [simulateFailure, setSimulateFailure] = useState(false);
   const [paymentState, setPaymentState] = useState<PaymentState>('pending');
+  const [receiptEmailStatus, setReceiptEmailStatus] = useState<'pending' | 'sent' | 'failed' | 'skipped' | null>(null);
+  const [receiptRecipientEmail, setReceiptRecipientEmail] = useState<string | null>(null);
+  const [isRetryingReceiptEmail, setIsRetryingReceiptEmail] = useState(false);
 
-  // New Invoice Form State
+  // Create Bill Modal State
+  const [billModalTab, setBillModalTab] = useState<'appointment' | 'manual'>('appointment');
+  const [appointmentSearchQuery, setAppointmentSearchQuery] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [manualPhone, setManualPhone] = useState('');
+  const [manualEmail, setManualEmail] = useState('');
+  const [manualRole, setManualRole] = useState('Patient');
+  const [manualAge, setManualAge] = useState<number | ''>(32);
+  const [manualGender, setManualGender] = useState<'Male' | 'Female' | 'Other'>('Male');
+  const [manualDescription, setManualDescription] = useState('Comprehensive Oral Clinical Consultation');
+  const [manualTotalAmount, setManualTotalAmount] = useState<number | ''>(1500);
+  const [manualAmountPaid, setManualAmountPaid] = useState<number | ''>(0);
+  const [manualInvoiceNumber, setManualInvoiceNumber] = useState('');
+
+  // Legacy/Direct Form State
   const [patientId, setPatientId] = useState(patients[0]?.id || '');
   const [description, setDescription] = useState('Root Canal Therapy (Tooth #16) + Crown Core');
   const [totalAmount, setTotalAmount] = useState(12500);
   const [amountPaid, setAmountPaid] = useState(5000);
+  const [customInvoiceNumber, setCustomInvoiceNumber] = useState('');
+  const [createInvoiceError, setCreateInvoiceError] = useState<string | null>(null);
 
   const isPatient = currentUser.role === 'patient';
   const currentPatient = isPatient
@@ -260,10 +419,10 @@ export const BillingView: React.FC<BillingViewProps> = ({
     ? invoices.filter(i => i.patientId === (currentUser.patientId || 'p-1'))
     : invoices;
 
-  // Filter & Single Date State (Default: Today's Bills)
+  // Filter & Single Date State (Default: 'all' so canonical bills created by doctors remain immediately visible)
   const todayDateStr = getLocalDateString(new Date());
-  const [datePreset, setDatePreset] = useState<BillingDatePreset>('today');
-  const [selectedDate, setSelectedDate] = useState<string>(todayDateStr);
+  const [datePreset, setDatePreset] = useState<BillingDatePreset>('all');
+  const [selectedDate, setSelectedDate] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<BillingStatusFilter>('all');
 
   const applyDatePreset = (preset: BillingDatePreset) => {
@@ -382,6 +541,11 @@ export const BillingView: React.FC<BillingViewProps> = ({
   const filteredInvoices = isPatient
     ? displayedInvoices
     : displayedInvoices.filter(inv => {
+        // If this invoice was created or edited, always keep it visible regardless of date filters
+        if (highlightedInvoiceId && inv.id === highlightedInvoiceId) {
+          return true;
+        }
+
         if (!isInvoiceMatchingDate(inv.date)) return false;
         if (!isInvoiceMatchingStatus(inv)) return false;
 
@@ -455,7 +619,7 @@ export const BillingView: React.FC<BillingViewProps> = ({
     setPaymentAmount(due);
 
     // Reset payment fields
-    setPaymentMethod('UPI / QR');
+    setPaymentMethod('Razorpay');
     setUtrNumber('');
     setUpiVpa('');
     setCardLast4('');
@@ -465,7 +629,181 @@ export const BillingView: React.FC<BillingViewProps> = ({
     setInsuranceClaimAuthCode('');
     setSimulateFailure(false);
     setPaymentState('pending');
+    setReceiptEmailStatus(null);
+    setReceiptRecipientEmail(null);
     setLastCompletedTxId('');
+  };
+
+  // --------------------------------------------------------------------------
+  // RAZORPAY STANDARD WEB CHECKOUT HANDLER
+  // --------------------------------------------------------------------------
+  const handleRazorpayCheckout = async () => {
+    if (!selectedInvoiceForPayment) return;
+
+    const patientId = currentUser.patientId || 'p-1';
+    if (isPatient && selectedInvoiceForPayment.patientId !== patientId) {
+      showToast('Security Error: You can only pay your own invoices.', 'error');
+      return;
+    }
+
+    const payAmt = paymentAmount > 0 ? paymentAmount : selectedInvoiceForPayment.balanceDue;
+    if (payAmt <= 0) {
+      showToast('Invalid payment amount.', 'error');
+      return;
+    }
+
+    const amountInPaise = Math.round(payAmt * 100);
+    if (amountInPaise < 100) {
+      showToast('Validation Error: Amount must be at least ₹1.00 (100 paise).', 'error');
+      return;
+    }
+
+    setIsProcessingPayment(true);
+
+    try {
+      // STEP 1: BACKEND - Call /api/create-order
+      const order = await paymentService.createRazorpayOrderApi(
+        amountInPaise,
+        'INR',
+        selectedInvoiceForPayment.invoiceNumber,
+        selectedInvoiceForPayment.id
+      );
+
+      // Retrieve the patient associated with the current bill/invoice
+      const billPatient =
+        patients.find(p => p.id === selectedInvoiceForPayment.patientId) ||
+        (selectedInvoiceForPayment.patientCode ? patients.find(p => p.code === selectedInvoiceForPayment.patientCode) : undefined) ||
+        StorageService.getPatients().find(p => p.id === selectedInvoiceForPayment.patientId) ||
+        (selectedInvoiceForPayment.patientCode ? StorageService.getPatients().find(p => p.code === selectedInvoiceForPayment.patientCode) : undefined);
+
+      const patientName = cleanPrefillValue(billPatient?.name) || cleanPrefillValue(selectedInvoiceForPayment.patientName);
+      const patientEmail = cleanPrefillValue(billPatient?.email);
+      const patientPhone = cleanPrefillValue(billPatient?.phone);
+
+      // STEP 2: FRONTEND - Open Razorpay Modal with order_id
+      await paymentService.openRazorpayCheckout({
+        orderId: order.order_id || order.id,
+        amountInPaise: order.amount || amountInPaise,
+        currency: order.currency || 'INR',
+        keyId: order.key_id,
+        name: 'Oralix · Advanced Dental Care',
+        description: `Settlement for Invoice #${selectedInvoiceForPayment.invoiceNumber}`,
+        invoiceNumber: selectedInvoiceForPayment.invoiceNumber,
+        patientName,
+        patientEmail,
+        patientPhone,
+        patient: billPatient,
+        onSuccess: async (paymentData) => {
+          try {
+            // STEP 3: BACKEND - Call /api/verify-payment with razorpay_order_id, razorpay_payment_id, razorpay_signature
+            const verification = await paymentService.verifyRazorpayPaymentApi({
+              razorpay_order_id: paymentData.razorpay_order_id,
+              razorpay_payment_id: paymentData.razorpay_payment_id,
+              razorpay_signature: paymentData.razorpay_signature,
+              bill_id: selectedInvoiceForPayment.id
+            });
+
+            if (verification.success) {
+              const total = Number(selectedInvoiceForPayment.totalAmount || selectedInvoiceForPayment.total || 0);
+              const newAmountPaid = (selectedInvoiceForPayment.amountPaid || 0) + payAmt;
+              const newBalanceDue = Math.max(0, total - newAmountPaid);
+              const newStatus: InvoiceStatus = newBalanceDue === 0 ? 'paid' : 'partial';
+
+              const updatedInvoice: Invoice = {
+                ...selectedInvoiceForPayment,
+                amountPaid: newAmountPaid,
+                balanceDue: newBalanceDue,
+                status: newStatus,
+                paymentMethod: 'Razorpay',
+                paymentStatus: 'verified',
+                razorpayPaymentId: paymentData.razorpay_payment_id,
+                razorpayOrderId: paymentData.razorpay_order_id,
+                paymentVerifiedAt: new Date().toISOString(),
+                receiptEmailStatus: verification.receipt_email_status || 'sent',
+                receiptEmailSentAt: verification.receipt_email_status === 'sent' ? new Date().toISOString() : undefined,
+                receiptEmailError: verification.receipt_email_error || undefined,
+                receiptPdfGeneratedAt: new Date().toISOString()
+              };
+
+              // 1. Update Invoices State in App
+              const updatedInvoices = invoices.map(i => i.id === updatedInvoice.id ? updatedInvoice : i);
+              onSaveInvoices(updatedInvoices);
+
+              // 2. Update Patient Balance Due
+              if (onSavePatients) {
+                const pt = patients.find(p => p.id === updatedInvoice.patientId);
+                if (pt) {
+                  const updatedPatients = patients.map(p =>
+                    p.id === pt.id ? { ...p, balanceDue: Math.max(0, (p.balanceDue || 0) - payAmt) } : p
+                  );
+                  onSavePatients(updatedPatients);
+                }
+              } else {
+                const storedPatients = StorageService.getPatients();
+                const pt = storedPatients.find(p => p.id === updatedInvoice.patientId);
+                if (pt) {
+                  pt.balanceDue = Math.max(0, (pt.balanceDue || 0) - payAmt);
+                  StorageService.savePatients(storedPatients);
+                }
+              }
+
+              // 3. Log Verified Transaction in Storage
+              const newTx: PaymentTransaction = {
+                id: paymentData.razorpay_payment_id,
+                invoiceId: updatedInvoice.id,
+                invoiceNumber: updatedInvoice.invoiceNumber,
+                patientId: updatedInvoice.patientId,
+                patientName: updatedInvoice.patientName,
+                amount: payAmt,
+                paymentMethod: 'Razorpay',
+                transactionRef: paymentData.razorpay_payment_id,
+                status: 'successful',
+                timestamp: new Date().toISOString(),
+                gatewayResponse: {
+                  authorizationCode: paymentData.razorpay_payment_id,
+                  failureReason: undefined
+                }
+              };
+              StorageService.addTransaction(newTx);
+
+              setSelectedInvoiceForPayment(updatedInvoice);
+              setLastCompletedTxId(paymentData.razorpay_payment_id);
+              setReceiptEmailStatus(verification.receipt_email_status || 'sent');
+              setReceiptRecipientEmail(verification.receipt_email || null);
+              setIsProcessingPayment(false);
+              setPaymentState('successful');
+
+              if (verification.receipt_email_status === 'sent') {
+                showToast(`Payment successful! Official receipt PDF emailed to ${verification.receipt_email || 'patient'}.`, 'success');
+              } else if (verification.receipt_email_status === 'skipped') {
+                showToast('Payment successful, but receipt could not be emailed because the patient email is unavailable.', 'info');
+              } else {
+                showToast(`Payment successful. Receipt email delivery failed: ${verification.receipt_email_error || 'Delivery failed'}.`, 'info');
+              }
+            } else {
+              setIsProcessingPayment(false);
+              showToast('Payment verification failed: Signature mismatch. Contact clinic support.', 'error');
+            }
+          } catch (verifyErr: any) {
+            console.error('Signature verification error:', verifyErr);
+            setIsProcessingPayment(false);
+            showToast(`Verification Failed: ${verifyErr.message || 'Signature mismatch'}`, 'error');
+          }
+        },
+        onDismiss: () => {
+          setIsProcessingPayment(false);
+          showToast('Razorpay checkout was cancelled.', 'info');
+        },
+        onFailure: (err) => {
+          setIsProcessingPayment(false);
+          showToast(`Razorpay payment failed: ${err?.description || 'Transaction unsuccessful'}`, 'error');
+        }
+      });
+    } catch (createErr: any) {
+      console.error('Error creating Razorpay order:', createErr);
+      setIsProcessingPayment(false);
+      showToast(`Order creation failed: ${createErr.message || 'Failed to initialize payment'}`, 'error');
+    }
   };
 
   // --------------------------------------------------------------------------
@@ -474,6 +812,10 @@ export const BillingView: React.FC<BillingViewProps> = ({
   const handleRecordPayment = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedInvoiceForPayment) return;
+
+    if (paymentMethod === 'Razorpay') {
+      return handleRazorpayCheckout();
+    }
 
     const patientId = currentUser.patientId || 'p-1';
     if (isPatient && selectedInvoiceForPayment.patientId !== patientId) {
@@ -569,15 +911,20 @@ export const BillingView: React.FC<BillingViewProps> = ({
     showToast('Payment transaction cancelled by patient.', 'info');
   };
 
-  const handleCreateInvoice = (e: React.FormEvent) => {
+  const handleCreateInvoice = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCreateInvoiceError(null);
     const patient = patients.find(p => p.id === patientId) || patients[0];
     const balance = Math.max(0, totalAmount - amountPaid);
     const status: InvoiceStatus = balance === 0 ? 'paid' : amountPaid > 0 ? 'partial' : 'unpaid';
 
+    const trimmedNum = customInvoiceNumber.trim();
+    const effectiveInvoiceNumber = trimmedNum || `DF-INV-2026-0${invoices.length + 50}`;
+    const effectiveId = trimmedNum ? `inv-${trimmedNum}` : `inv-${Date.now()}`;
+
     const newInvoice: Invoice = {
-      id: `inv-${Date.now()}`,
-      invoiceNumber: `DF-INV-2026-0${invoices.length + 50}`,
+      id: effectiveId,
+      invoiceNumber: effectiveInvoiceNumber,
       patientId: patient.id,
       patientName: patient.name,
       patientCode: patient.code,
@@ -589,47 +936,63 @@ export const BillingView: React.FC<BillingViewProps> = ({
       balanceDue: balance,
       status: status,
       paymentMethod: amountPaid > 0 ? 'UPI' : undefined,
-      description: description,
+      description: description.trim(),
       sentToReceptionist: true
     };
 
-    onSaveInvoices([newInvoice, ...invoices]);
+    const result = await billingService.createBill(newInvoice, invoices);
+    if (!result.success) {
+      const err = result.error || 'This bill has already been created for this patient.';
+      setCreateInvoiceError(err);
+      showToast(err, 'error');
+      return;
+    }
+
+    const canonicalBill = result.bill || newInvoice;
+    onSaveInvoices([canonicalBill, ...invoices]);
+    setHighlightedInvoiceId(canonicalBill.id);
     setIsAddInvoiceModalOpen(false);
-    showToast(`Created invoice ${newInvoice.invoiceNumber} for ${patient.name}`, 'success');
+    setCustomInvoiceNumber('');
+    showToast(`Created invoice ${canonicalBill.invoiceNumber} for ${patient.name}`, 'success');
   };
 
   const handleOpenPatientBill = (inv: Invoice) => {
-    const pt = patients.find(
+    const allApts = appointments || StorageService.getAppointments();
+    const apt = allApts.find(
+      a => a.id === inv.appointmentId || a.patientId === inv.patientId || a.patientName.toLowerCase() === inv.patientName.toLowerCase()
+    ) || null;
+
+    const matchedPt = patients.find(
       p => p.id === inv.patientId || p.name.toLowerCase() === inv.patientName.toLowerCase()
-    ) || {
+    );
+
+    const pt: Patient = matchedPt || {
       id: inv.patientId,
       code: inv.patientCode || 'DF-2026-PAT',
       name: inv.patientName,
       age: inv.patientAge || 32,
       gender: inv.patientGender || 'Male',
-      phone: '+91 98765 43210',
-      email: `${inv.patientName.toLowerCase().replace(/\s+/g, '.')}@example.com`,
+      phone: inv.patientPhone || apt?.patientPhone || '',
+      email: inv.patientEmail || apt?.patientEmail || '',
       balanceDue: inv.balanceDue,
-      allergies: [],
       medicalAlerts: []
-    } as Patient;
-
-    const allApts = appointments || StorageService.getAppointments();
-    const apt = allApts.find(
-      a => a.id === inv.appointmentId || a.patientId === pt.id || a.patientName.toLowerCase() === pt.name.toLowerCase()
-    ) || null;
+    };
 
     setActiveBillPatient({
-      patient: pt,
+      patient: {
+        ...pt,
+        phone: inv.patientPhone || pt.phone || apt?.patientPhone || '',
+        email: inv.patientEmail || pt.email || apt?.patientEmail || ''
+      },
       invoice: inv,
       appointment: apt
     });
   };
 
-  const handleSavePatientBill = (
+  const handleSavePatientBill = async (
     updatedInvoice: Invoice,
     updatedPatientData: { age: number; gender: 'Male' | 'Female' | 'Other' }
-  ) => {
+  ): Promise<boolean> => {
     // 1. Prevent sync useEffect from ever re-opening this bill
     if (targetPatientId) {
       consumedTargetKeysRef.current.add(`${targetPatientId}-${targetAppointmentId || ''}`);
@@ -640,17 +1003,13 @@ export const BillingView: React.FC<BillingViewProps> = ({
       consumedTargetKeysRef.current.add(`${activeBillPatient.patient.id}-`);
     }
 
-    // 2. Match existing invoice to update in place instead of creating duplicate bills on multiple clicks
-    const existingIndex = invoices.findIndex(
-      i =>
-        i.id === updatedInvoice.id ||
-        i.invoiceNumber === updatedInvoice.invoiceNumber ||
-        (activeBillPatient?.invoice?.id && i.id === activeBillPatient.invoice.id) ||
-        (updatedInvoice.appointmentId && i.appointmentId && i.appointmentId === updatedInvoice.appointmentId) ||
-        (i.patientId === updatedInvoice.patientId && i.status !== 'paid' && (!i.appointmentId || i.appointmentId === updatedInvoice.appointmentId)) ||
-        (i.patientId === updatedInvoice.patientId && !updatedInvoice.appointmentId) ||
-        (i.patientName.trim().toLowerCase() === updatedInvoice.patientName.trim().toLowerCase() && i.status !== 'paid')
-    );
+    // 2. Identify canonical bill record strictly by unique bill_id or activeBillContext
+    const targetBillId = updatedInvoice.id || activeBillPatient?.invoice?.id;
+    const existingIndex = targetBillId
+      ? invoices.findIndex(
+          i => i.id === targetBillId || (updatedInvoice.invoiceNumber && i.invoiceNumber === updatedInvoice.invoiceNumber)
+        )
+      : -1;
 
     let newInvoices: Invoice[];
     let finalSavedInvoice: Invoice;
@@ -664,13 +1023,30 @@ export const BillingView: React.FC<BillingViewProps> = ({
         sentToReceptionist: true,
         isDraft: updatedInvoice.isDraft ?? existing.isDraft ?? false
       };
+
+      // Perform authoritative database UPDATE (Doctor edits)
+      await billingService.updateBill(finalSavedInvoice);
+
       newInvoices = [...invoices];
       newInvoices[existingIndex] = finalSavedInvoice;
     } else {
       finalSavedInvoice = {
         ...updatedInvoice,
+        id: updatedInvoice.id || `inv-${Date.now()}`,
+        invoiceNumber: updatedInvoice.invoiceNumber || `INV-2026-${Math.floor(100 + Math.random() * 900)}`,
         sentToReceptionist: true
       };
+
+      // Authoritative database check & insert for new bill
+      const createRes = await billingService.createBill(finalSavedInvoice, invoices);
+      if (!createRes.success) {
+        showToast(createRes.error || 'This bill has already been created for this patient.', 'error');
+        return false;
+      }
+
+      if (createRes.bill) {
+        finalSavedInvoice = createRes.bill;
+      }
       newInvoices = [finalSavedInvoice, ...invoices];
     }
     onSaveInvoices(newInvoices);
@@ -702,17 +1078,31 @@ export const BillingView: React.FC<BillingViewProps> = ({
     setHighlightedInvoiceId(finalSavedInvoice.id);
 
     showToast(`Bill ${finalSavedInvoice.invoiceNumber} saved & synced with Receptionist Desk for ${finalSavedInvoice.patientName}.`, 'success');
+    return true;
   };
 
   // Doctor delete invoice handler
-  const handleDeleteInvoice = (invoiceId: string) => {
-    const inv = invoices.find(i => i.id === invoiceId);
+  const handleDeleteInvoice = async (invoiceId: string) => {
+    const inv = invoices.find(i => i.id === invoiceId || i.invoiceNumber === invoiceId);
     if (!inv) return;
 
-    if (window.confirm(`Are you sure you want to delete invoice ${inv.invoiceNumber} for ${inv.patientName}? This action cannot be undone.`)) {
-      const updatedInvoices = invoices.filter(i => i.id !== invoiceId);
+    if (!window.confirm(`Are you sure you want to delete invoice ${inv.invoiceNumber} for ${inv.patientName}? This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      // 1. Authoritative Database Deletion first (Database is source of truth)
+      const deleteResult = await billingService.deleteBill(inv.id);
+      if (!deleteResult.success) {
+        console.error('[BillingView] Database delete failed:', deleteResult.error);
+        showToast(`Failed to delete invoice from database: ${deleteResult.error || 'Unknown error'}`, 'error');
+        return; // DO NOT REMOVE FROM UI IF DB DELETE FAILED
+      }
+
+      // 2. Database confirmed deletion -> update UI and local state
+      const updatedInvoices = invoices.filter(i => i.id !== inv.id && i.invoiceNumber !== inv.invoiceNumber);
       onSaveInvoices(updatedInvoices);
-      StorageService.deleteInvoice(invoiceId);
+      StorageService.safeSetInvoices(updatedInvoices);
 
       const pt = patients.find(p => p.id === inv.patientId);
       if (pt) {
@@ -727,9 +1117,12 @@ export const BillingView: React.FC<BillingViewProps> = ({
       }
 
       showToast(`Invoice ${inv.invoiceNumber} deleted successfully.`, 'info');
-      if (activeBillPatient?.invoice?.id === invoiceId) {
+      if (activeBillPatient?.invoice?.id === inv.id || activeBillPatient?.invoice?.invoiceNumber === inv.invoiceNumber) {
         setActiveBillPatient(null);
       }
+    } catch (err: any) {
+      console.error('[BillingView] handleDeleteInvoice error:', err);
+      showToast(`Error deleting invoice: ${err?.message || 'Database error'}`, 'error');
     }
   };
 
@@ -763,6 +1156,7 @@ export const BillingView: React.FC<BillingViewProps> = ({
         invoice={activeBillPatient.invoice}
         appointment={activeBillPatient.appointment}
         treatmentPlans={treatmentPlans}
+        existingInvoices={invoices}
         onSave={handleSavePatientBill}
         onDeleteInvoice={handleDeleteInvoice}
         onBack={() => {
@@ -806,12 +1200,15 @@ export const BillingView: React.FC<BillingViewProps> = ({
                 <button
                   onClick={() => {
                     const unpaidInv = displayedInvoices.find(i => (i.balanceDue !== undefined ? i.balanceDue : (i.totalAmount || i.total || 0) - i.amountPaid) > 0);
-                    if (unpaidInv) handleOpenPatientPay(unpaidInv);
+                    if (unpaidInv) {
+                      handleOpenPatientPay(unpaidInv);
+                      setPaymentMethod('Razorpay');
+                    }
                   }}
-                  className="btn-primary text-xs cursor-pointer flex items-center gap-2"
+                  className="btn-primary text-xs cursor-pointer flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-xs"
                 >
                   <CreditCard className="w-4 h-4" />
-                  <span>PAY NOW (₹{totalDue.toLocaleString()})</span>
+                  <span>Pay with Razorpay (₹{totalDue.toLocaleString()})</span>
                 </button>
               )}
             </div>
@@ -949,11 +1346,14 @@ export const BillingView: React.FC<BillingViewProps> = ({
 
                           {due > 0 && (
                             <button
-                              onClick={() => handleOpenPatientPay(inv)}
-                              className="btn-primary text-xs cursor-pointer flex items-center gap-2"
+                              onClick={() => {
+                                handleOpenPatientPay(inv);
+                                setPaymentMethod('Razorpay');
+                              }}
+                              className="btn-primary text-xs cursor-pointer flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white shadow-xs font-bold"
                             >
-                              <CreditCard className="w-4 h-4" />
-                              <span>Pay Balance</span>
+                              <CreditCard className="w-3.5 h-3.5" />
+                              <span>Pay with Razorpay</span>
                             </button>
                           )}
                         </div>
@@ -997,11 +1397,16 @@ export const BillingView: React.FC<BillingViewProps> = ({
             </div>
 
             <button
-              onClick={() => setIsAddInvoiceModalOpen(true)}
-              className="btn-primary text-xs cursor-pointer flex items-center gap-1.5"
+              onClick={() => {
+                setBillModalTab('appointment');
+                setCreateInvoiceError(null);
+                setAppointmentSearchQuery('');
+                setIsAddInvoiceModalOpen(true);
+              }}
+              className="btn-primary text-xs cursor-pointer flex items-center gap-1.5 shadow-2xs"
             >
               <Plus className="w-4 h-4" />
-              <span>Create Invoice</span>
+              <span>Create Bill</span>
             </button>
           </div>
 
@@ -1430,7 +1835,16 @@ export const BillingView: React.FC<BillingViewProps> = ({
 
                         <td className="py-3 px-4 text-right">
                           <div className="flex items-center justify-end gap-2">
-
+                            {/* Doctor Edit Bill Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenPatientBill(inv)}
+                              className="px-2.5 py-1 text-[11px] font-bold text-[#3B4D3A] hover:text-[#252525] bg-[#8FA88D]/20 hover:bg-[#8FA88D]/35 border border-[#8FA88D]/30 rounded-lg transition cursor-pointer flex items-center gap-1 shrink-0"
+                              title={`Edit canonical bill ${inv.invoiceNumber}`}
+                            >
+                              <Edit3 className="w-3 h-3 text-[#3B4D3A]" />
+                              <span>Edit</span>
+                            </button>
 
                             {/* Save as Draft (Downloads PDF format) */}
                             <button
@@ -1552,6 +1966,50 @@ export const BillingView: React.FC<BillingViewProps> = ({
                       <span className="text-[#6F6D69]">Status:</span>
                       <span className="font-extrabold text-emerald-600 uppercase">PAID</span>
                     </div>
+                    <div className="flex justify-between items-center pt-1 border-t border-stone-200/80">
+                      <span className="text-[#6F6D69]">Receipt Email:</span>
+                      {receiptEmailStatus === 'sent' ? (
+                        <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px]">
+                          ✓ Sent to {receiptRecipientEmail || 'patient'}
+                        </span>
+                      ) : receiptEmailStatus === 'skipped' ? (
+                        <span className="font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 text-[11px]">
+                          Skipped (no patient email)
+                        </span>
+                      ) : receiptEmailStatus === 'failed' ? (
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200 text-[11px]">
+                            Delivery failed
+                          </span>
+                          <button
+                            type="button"
+                            disabled={isRetryingReceiptEmail}
+                            onClick={async () => {
+                              setIsRetryingReceiptEmail(true);
+                              try {
+                                const res = await paymentService.retryReceiptEmailApi(selectedInvoiceForPayment.id);
+                                if (res.success) {
+                                  setReceiptEmailStatus('sent');
+                                  setReceiptRecipientEmail(res.receipt_email || null);
+                                  showToast(`Receipt email sent to ${res.receipt_email}!`, 'success');
+                                } else {
+                                  showToast(`Failed: ${res.error || 'Server error'}`, 'error');
+                                }
+                              } catch (e: any) {
+                                showToast(`Resend failed: ${e.message}`, 'error');
+                              } finally {
+                                setIsRetryingReceiptEmail(false);
+                              }
+                            }}
+                            className="text-[10px] text-blue-600 hover:text-blue-800 font-bold underline cursor-pointer"
+                          >
+                            {isRetryingReceiptEmail ? 'Retrying...' : 'Retry'}
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="font-semibold text-stone-500 text-[11px]">Auto-generating...</span>
+                      )}
+                    </div>
                   </div>
 
                   <button
@@ -1571,6 +2029,26 @@ export const BillingView: React.FC<BillingViewProps> = ({
                       Choose Payment Method
                     </label>
                     <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('Razorpay')}
+                        className={`col-span-2 px-3.5 py-2.5 text-xs font-bold rounded-xl border transition cursor-pointer flex items-center justify-between gap-2 ${
+                          paymentMethod === 'Razorpay'
+                            ? 'bg-gradient-to-r from-blue-50/90 via-indigo-50/50 to-white border-blue-500 text-blue-900 shadow-sm font-extrabold ring-1 ring-blue-500/20'
+                            : 'bg-white border-stone-200 text-[#252525] hover:bg-stone-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="w-5 h-5 rounded-lg bg-blue-600 text-white flex items-center justify-center text-[10px] font-black">
+                            R
+                          </span>
+                          <span className="font-extrabold">Razorpay Standard Checkout</span>
+                        </div>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
+                          Recommended
+                        </span>
+                      </button>
+
                       {(['UPI / QR', 'Credit Card', 'Net Banking', 'Wallet'] as const).map(m => (
                         <button
                           key={m}
@@ -1591,6 +2069,55 @@ export const BillingView: React.FC<BillingViewProps> = ({
                       ))}
                     </div>
                   </div>
+
+                  {/* METHOD 0: RAZORPAY STANDARD WEB CHECKOUT */}
+                  {paymentMethod === 'Razorpay' && (
+                    <div className="p-4 bg-gradient-to-br from-blue-50/70 via-white to-indigo-50/30 rounded-2xl border border-blue-200/80 shadow-xs space-y-3 text-left">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs">
+                            <CreditCard className="w-4 h-4" />
+                          </span>
+                          <div>
+                            <h4 className="text-xs font-black text-[#252525] flex items-center gap-1.5">
+                              Razorpay Standard Checkout
+                              <span className="px-1.5 py-0.5 rounded text-[9px] bg-blue-100 text-blue-800 font-extrabold uppercase">
+                                Active
+                              </span>
+                            </h4>
+                            <p className="text-[10px] text-[#6F6D69]">
+                              Official Popup Modal · Cards, UPI, NetBanking, Wallets
+                            </p>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-[9px] font-bold text-stone-400 block uppercase tracking-wider">Security</span>
+                          <span className="text-[11px] font-extrabold text-emerald-700 flex items-center gap-1">
+                            <ShieldCheck className="w-3.5 h-3.5" /> PCI-DSS
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="p-3 bg-white rounded-xl border border-stone-200/80 text-xs space-y-1.5">
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-stone-500">Payable Amount:</span>
+                          <span className="font-extrabold text-[#252525]">₹{paymentAmount.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-stone-500">Invoice Reference:</span>
+                          <span className="font-mono font-bold text-stone-700">{selectedInvoiceForPayment.invoiceNumber}</span>
+                        </div>
+                        <div className="flex justify-between text-[11px]">
+                          <span className="text-stone-500">Backend Verification:</span>
+                          <span className="font-bold text-blue-700">HMAC-SHA256 Server Verified</span>
+                        </div>
+                      </div>
+
+                      <div className="text-[10px] text-stone-600 leading-relaxed bg-blue-50/50 p-2.5 rounded-xl border border-blue-100">
+                        ⚡ Click <strong>Pay with Razorpay</strong> below to create a verified server order and open the official Razorpay Checkout modal.
+                      </div>
+                    </div>
+                  )}
 
                   {/* METHOD 1: LOCAL INLINE SVG MOCK QR CODE */}
                   {paymentMethod === 'UPI / QR' && (
@@ -1621,7 +2148,12 @@ export const BillingView: React.FC<BillingViewProps> = ({
                         </label>
                         <input
                           type="text"
-                          defaultValue={currentPatient?.name || 'Patient Cardholder'}
+                          defaultValue={
+                            patients.find(p => p.id === selectedInvoiceForPayment.patientId)?.name ||
+                            selectedInvoiceForPayment.patientName ||
+                            currentPatient?.name ||
+                            'Patient Cardholder'
+                          }
                           required
                           className="w-full px-2.5 py-1.5 text-xs border border-stone-200 rounded-lg bg-white text-[#252525]"
                         />
@@ -1714,17 +2246,29 @@ export const BillingView: React.FC<BillingViewProps> = ({
                     <button
                       type="submit"
                       disabled={isProcessingPayment}
-                      className="btn-primary text-xs cursor-pointer flex items-center justify-center gap-1.5 px-5 py-2 min-w-[130px]"
+                      className={`btn-primary text-xs cursor-pointer flex items-center justify-center gap-1.5 px-5 py-2.5 min-w-[150px] ${
+                        paymentMethod === 'Razorpay'
+                          ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md font-bold'
+                          : ''
+                      }`}
                     >
                       {isProcessingPayment ? (
                         <>
                           <Loader2 className="w-4 h-4 animate-spin text-white" />
-                          <span>Processing...</span>
+                          <span>{paymentMethod === 'Razorpay' ? 'Connecting to Razorpay...' : 'Processing...'}</span>
                         </>
                       ) : (
                         <>
-                          <Check className="w-4 h-4" />
-                          <span>Pay ₹{paymentAmount.toLocaleString()}</span>
+                          {paymentMethod === 'Razorpay' ? (
+                            <CreditCard className="w-4 h-4" />
+                          ) : (
+                            <Check className="w-4 h-4" />
+                          )}
+                          <span>
+                            {paymentMethod === 'Razorpay'
+                              ? `Checkout with Razorpay (₹${paymentAmount.toLocaleString()})`
+                              : `Pay ₹${paymentAmount.toLocaleString()}`}
+                          </span>
                         </>
                       )}
                     </button>
@@ -1736,94 +2280,397 @@ export const BillingView: React.FC<BillingViewProps> = ({
         </div>
       )}
 
-      {/* Create Invoice Modal for Staff */}
+      {/* Create Bill Modal with TWO Explicit Choices */}
       {isAddInvoiceModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className="bg-white rounded-lg border border-gray-200 shadow-xl w-full max-w-md p-6 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-              <h2 className="text-base font-bold text-gray-900">Create New Invoice</h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl border border-stone-200 shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-5 pb-3 border-b border-stone-100 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#C8B58D] block mb-0.5">
+                  DOCTOR BILLING DESK &bull; NEW INVOICE
+                </span>
+                <h2 className="text-lg font-black text-[#252525]">Create Bill</h2>
+                <p className="text-xs text-[#6F6D69]">
+                  Generate a bill from a booked appointment or enter walk-in patient details manually.
+                </p>
+              </div>
               <button
-                onClick={() => setIsAddInvoiceModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600 text-sm cursor-pointer"
+                type="button"
+                onClick={() => {
+                  setIsAddInvoiceModalOpen(false);
+                  setCreateInvoiceError(null);
+                }}
+                className="w-8 h-8 rounded-full bg-stone-100 hover:bg-stone-200 text-stone-600 flex items-center justify-center text-sm font-bold transition cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleCreateInvoice} className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Select Patient *
-                </label>
-                <select
-                  value={patientId}
-                  onChange={e => setPatientId(e.target.value)}
-                  className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                >
-                  {patients.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.code})
-                    </option>
-                  ))}
-                </select>
+            {/* Error banner if any */}
+            {createInvoiceError && (
+              <div className="mx-5 mt-3 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-bold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{createInvoiceError}</span>
               </div>
+            )}
 
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Itemized Treatments / Description *
-                </label>
-                <input
-                  type="text"
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                  required
-                  className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Total Amount (₹) *
-                  </label>
-                  <input
-                    type="number"
-                    value={totalAmount}
-                    onChange={e => setTotalAmount(Number(e.target.value))}
-                    required
-                    className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Initial Paid (₹)
-                  </label>
-                  <input
-                    type="number"
-                    value={amountPaid}
-                    onChange={e => setAmountPaid(Number(e.target.value))}
-                    className="w-full px-3 py-1.5 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-gray-100">
+            {/* TWO Distinct Tabs / Options Switcher */}
+            <div className="px-5 pt-3">
+              <div className="grid grid-cols-2 p-1 bg-stone-100 rounded-xl">
                 <button
                   type="button"
-                  onClick={() => setIsAddInvoiceModalOpen(false)}
-                  className="px-3.5 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-100 rounded-md transition cursor-pointer"
+                  onClick={() => {
+                    setBillModalTab('appointment');
+                    setCreateInvoiceError(null);
+                  }}
+                  className={`py-2 px-3 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    billModalTab === 'appointment'
+                      ? 'bg-white text-[#252525] shadow-xs'
+                      : 'text-[#6F6D69] hover:text-[#252525]'
+                  }`}
                 >
-                  Cancel
+                  <Calendar className="w-3.5 h-3.5 text-[#C8B58D]" />
+                  <span>Option A: Booked Appointment</span>
                 </button>
                 <button
-                  type="submit"
-                  className="px-4 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition shadow-2xs cursor-pointer"
+                  type="button"
+                  onClick={() => {
+                    setBillModalTab('manual');
+                    setCreateInvoiceError(null);
+                  }}
+                  className={`py-2 px-3 text-xs font-extrabold rounded-lg transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    billModalTab === 'manual'
+                      ? 'bg-white text-[#252525] shadow-xs'
+                      : 'text-[#6F6D69] hover:text-[#252525]'
+                  }`}
                 >
-                  Generate Invoice
+                  <UserCheck className="w-3.5 h-3.5 text-[#C8B58D]" />
+                  <span>Option B: Enter Manually</span>
                 </button>
               </div>
-            </form>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto flex-1 space-y-4">
+              {billModalTab === 'appointment' ? (
+                /* OPTION A: Select from Booked Appointments */
+                <div className="space-y-3">
+                  <div className="p-3 bg-amber-50/60 border border-amber-200/80 rounded-xl text-xs text-amber-900">
+                    <p className="font-bold">Select from Patients with Booked Appointments</p>
+                    <p className="text-[11px] text-amber-800/90 mt-0.5">
+                      Selecting an appointment automatically fetches the patient's verified Name, Contact Phone, Email, Role, and Appointment details directly from the database.
+                    </p>
+                  </div>
+
+                  {/* Search Appointments */}
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Search booked patient name, phone, procedure, or appointment ID..."
+                      value={appointmentSearchQuery}
+                      onChange={e => setAppointmentSearchQuery(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525]"
+                    />
+                  </div>
+
+                  {/* Booked Appointments List */}
+                  <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+                    {(() => {
+                      const allApts = (appointments || StorageService.getAppointments() || []).filter(
+                        a => a.status !== 'cancelled'
+                      );
+                      const q = appointmentSearchQuery.trim().toLowerCase();
+                      const filtered = allApts.filter(a => {
+                        if (!q) return true;
+                        return (
+                          a.patientName.toLowerCase().includes(q) ||
+                          (a.patientPhone && a.patientPhone.includes(q)) ||
+                          (a.patientEmail && a.patientEmail.toLowerCase().includes(q)) ||
+                          (a.procedure && a.procedure.toLowerCase().includes(q)) ||
+                          a.id.toLowerCase().includes(q) ||
+                          (a.tokenNumber && a.tokenNumber.toLowerCase().includes(q))
+                        );
+                      });
+
+                      if (filtered.length === 0) {
+                        return (
+                          <div className="p-8 text-center bg-stone-50 rounded-xl border border-dashed border-stone-200">
+                            <Calendar className="w-8 h-8 text-stone-300 mx-auto mb-2" />
+                            <p className="text-xs font-bold text-stone-600">No matching booked appointments found</p>
+                            <p className="text-[11px] text-stone-400 mt-0.5">
+                              Try another search term or switch to Option B to create a manual bill.
+                            </p>
+                          </div>
+                        );
+                      }
+
+                      return filtered.map(apt => {
+                        const pt = patients.find(
+                          p => p.id === apt.patientId || p.name.toLowerCase() === apt.patientName.toLowerCase()
+                        );
+                        const existingInv = invoices.find(i => i.appointmentId === apt.id);
+
+                        return (
+                          <div
+                            key={apt.id}
+                            className="p-3.5 bg-stone-50/70 hover:bg-stone-100/80 border border-stone-200/80 rounded-xl transition flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-extrabold text-sm text-[#252525]">
+                                  {apt.patientName}
+                                </span>
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#EDE8DE] text-[#252525] border border-[#C8B58D]/30">
+                                  Patient
+                                </span>
+                                {existingInv && (
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    Bill Created ({existingInv.invoiceNumber})
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-[#6F6D69] flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                                <span className="flex items-center gap-1 font-semibold text-[#252525]">
+                                  <Clock className="w-3 h-3 text-[#C8B58D]" />
+                                  <span>{apt.date} &bull; {apt.time}</span>
+                                </span>
+                                <span>&bull;</span>
+                                <span>Phone: {apt.patientPhone || pt?.phone || 'N/A'}</span>
+                                <span>&bull;</span>
+                                <span>Email: {apt.patientEmail || pt?.email || 'N/A'}</span>
+                              </p>
+                              <p className="text-[11px] text-[#252525] font-medium">
+                                Reason: <span className="font-bold text-[#8FA88D]">{apt.procedure}</span> &bull; {apt.doctorName}
+                              </p>
+                            </div>
+
+                            {existingInv ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const resolvedPatient: Patient = {
+                                    id: (pt && pt.id !== 'p-1') ? pt.id : (apt.patientId && apt.patientId !== 'p-1' ? apt.patientId : `p-${apt.id}`),
+                                    code: pt?.code || apt.tokenNumber || `DF-${apt.id.slice(-4).toUpperCase()}`,
+                                    name: apt.patientName || pt?.name || 'Patient',
+                                    age: pt?.age || 32,
+                                    gender: (pt?.gender as any) || 'Male',
+                                    phone: apt.patientPhone || pt?.phone || '',
+                                    email: apt.patientEmail || pt?.email || '',
+                                    bloodGroup: pt?.bloodGroup || 'O+',
+                                    medicalAlerts: pt?.medicalAlerts || [],
+                                    balanceDue: pt?.balanceDue || 0
+                                  };
+
+                                  setActiveBillPatient({
+                                    patient: resolvedPatient,
+                                    invoice: existingInv,
+                                    appointment: apt
+                                  });
+                                  setIsAddInvoiceModalOpen(false);
+                                  showToast(`Viewing existing bill ${existingInv.invoiceNumber} for ${apt.patientName}`, 'info');
+                                }}
+                                className="px-3.5 py-1.5 text-xs font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-xl transition cursor-pointer shrink-0 flex items-center justify-center gap-1.5 shadow-2xs"
+                                title="A bill already exists for this appointment - Click to view"
+                              >
+                                <Receipt className="w-3.5 h-3.5 text-emerald-600" />
+                                <span>View Existing Bill</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const resolvedPatient: Patient = {
+                                    id: (pt && pt.id !== 'p-1') ? pt.id : (apt.patientId && apt.patientId !== 'p-1' ? apt.patientId : `p-${apt.id}`),
+                                    code: pt?.code || apt.tokenNumber || `DF-${apt.id.slice(-4).toUpperCase()}`,
+                                    name: apt.patientName || pt?.name || 'Patient',
+                                    age: pt?.age || 32,
+                                    gender: (pt?.gender as any) || 'Male',
+                                    phone: apt.patientPhone || pt?.phone || '',
+                                    email: apt.patientEmail || pt?.email || '',
+                                    bloodGroup: pt?.bloodGroup || 'O+',
+                                    medicalAlerts: pt?.medicalAlerts || [],
+                                    balanceDue: pt?.balanceDue || 0
+                                  };
+
+                                  setActiveBillPatient({
+                                    patient: resolvedPatient,
+                                    invoice: null,
+                                    appointment: apt
+                                  });
+                                  setIsAddInvoiceModalOpen(false);
+                                  showToast(`Loaded appointment for ${apt.patientName}`, 'info');
+                                }}
+                                className="px-3.5 py-1.5 text-xs font-bold bg-[#EDE8DE] hover:bg-[#C8B58D] text-[#252525] rounded-xl transition cursor-pointer shrink-0 flex items-center justify-center gap-1.5 shadow-2xs"
+                                title="Create new bill for this appointment"
+                              >
+                                <Receipt className="w-3.5 h-3.5 text-[#252525]" />
+                                <span>Create Bill</span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              ) : (
+                /* OPTION B: Enter Patient Details Manually */
+                <form
+                  onSubmit={async e => {
+                    e.preventDefault();
+                    setCreateInvoiceError(null);
+
+                    if (!manualName.trim()) {
+                      setCreateInvoiceError('Patient Name is mandatory.');
+                      return;
+                    }
+                    if (!manualPhone.trim()) {
+                      setCreateInvoiceError('Patient Contact Phone is mandatory.');
+                      return;
+                    }
+                    if (!manualEmail.trim()) {
+                      setCreateInvoiceError('Patient Email is mandatory.');
+                      return;
+                    }
+
+                    const manualPt: Patient = {
+                      id: `p-man-${Date.now()}`,
+                      code: `DF-WALKIN-${Math.floor(100 + Math.random() * 900)}`,
+                      name: manualName.trim(),
+                      age: typeof manualAge === 'number' ? manualAge : 32,
+                      gender: manualGender,
+                      phone: manualPhone.trim(),
+                      email: manualEmail.trim(),
+                      medicalAlerts: [],
+                      balanceDue: 0
+                    };
+
+                    // Open directly into PatientBillView canvas with appointment: null
+                    setActiveBillPatient({
+                      patient: manualPt,
+                      invoice: null,
+                      appointment: null
+                    });
+                    setIsAddInvoiceModalOpen(false);
+                    showToast(`Opened billing canvas for manual walk-in ${manualName.trim()}`, 'success');
+                  }}
+                  className="space-y-4"
+                >
+                  <div className="p-3 bg-sky-50 border border-sky-200 rounded-xl text-xs text-sky-900">
+                    <p className="font-bold">Manual Patient Billing (No Appointment Linked)</p>
+                    <p className="text-[11px] text-sky-800/90 mt-0.5">
+                      Use this option for walk-in patients or external consultations. The bill will be generated with appointment_id as NULL, following clinic records standards.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-bold text-[#252525] mb-1">
+                        Patient Full Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={manualName}
+                        onChange={e => setManualName(e.target.value)}
+                        placeholder="e.g. Vikram Malhotra"
+                        className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525] font-bold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-[#252525] mb-1">
+                        Patient Contact Phone <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="tel"
+                        required
+                        value={manualPhone}
+                        onChange={e => setManualPhone(e.target.value)}
+                        placeholder="e.g. +91 98765 12345"
+                        className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525] font-medium"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-[#252525] mb-1">
+                        Patient Email <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        value={manualEmail}
+                        onChange={e => setManualEmail(e.target.value)}
+                        placeholder="e.g. vikram.m@example.com"
+                        className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525] font-medium"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-[#252525] mb-1">
+                        Patient Role
+                      </label>
+                      <select
+                        value={manualRole}
+                        onChange={e => setManualRole(e.target.value)}
+                        className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525] font-semibold"
+                      >
+                        <option value="Patient">Patient</option>
+                        <option value="Walk-in Patient">Walk-in Patient</option>
+                        <option value="Emergency Patient">Emergency Patient</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-[#252525] mb-1">
+                        Sex / Gender
+                      </label>
+                      <select
+                        value={manualGender}
+                        onChange={e => setManualGender(e.target.value as any)}
+                        className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525] font-semibold"
+                      >
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="block text-xs font-bold text-[#252525] mb-1">
+                        Reason for Visit / Chief Complaint
+                      </label>
+                      <input
+                        type="text"
+                        value={manualDescription}
+                        onChange={e => setManualDescription(e.target.value)}
+                        placeholder="e.g. Severe toothache or walk-in routine checkup"
+                        className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-stone-100 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsAddInvoiceModalOpen(false)}
+                      className="px-4 py-2 text-xs font-bold text-stone-600 hover:bg-stone-100 rounded-xl transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-primary text-xs cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Proceed to Itemized Billing Canvas &rarr;</span>
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
           </div>
         </div>
       )}

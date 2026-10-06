@@ -2,13 +2,24 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+import { createRazorpayApp } from './server/razorpayService.ts';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        name: 'razorpay-api-dev-server',
+        configureServer(server) {
+          // Mount authoritative API endpoints into Vite dev server
+          server.middlewares.use(createRazorpayApp());
+        }
+      }
+    ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname || '.', '.'),
       },
     },
     server: {
