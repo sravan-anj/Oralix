@@ -4,7 +4,7 @@
   :root {
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-display: 'Outfit', 'Plus Jakarta Sans', sans-serif;
-    
+
     /* Oralix 2.0 Warm Ivory & Clinical Studio Visual Tokens */
     --color-bg: #F7F5F1;
     --color-bg-alt: #F3F1ED;
@@ -16,13 +16,13 @@
     --color-text-muted: #999690;
     --color-border: rgba(70, 65, 55, 0.08);
     --color-border-warm: rgba(200, 181, 141, 0.25);
-    
+
     /* Warm Champagne Accent Palette */
     --color-accent-primary: #C8B58D;
     --color-accent-hover: #B8A378;
     --color-accent-soft: rgba(200, 181, 141, 0.15);
     --color-accent-glow: rgba(200, 181, 141, 0.25);
-    
+
     /* Muted Status Indicators */
     --color-success: #8FA88D;
     --color-warning: #C5A66A;
@@ -35,8 +35,10 @@
     font-weight: 900;
     letter-spacing: -0.02em;
   }
-  
-  html, body, #root {
+
+  html,
+  body,
+  #root {
     width: 100%;
     min-width: 100%;
     height: 100%;
@@ -45,7 +47,7 @@
     padding: 0;
     overflow-x: hidden;
   }
-  
+
   html {
     font-family: var(--font-sans);
     scroll-behavior: smooth;
@@ -63,9 +65,12 @@
 
 /* Custom Animation Keyframes for Level 10 Executive Clinical Aesthetic */
 @keyframes toothFloat {
-  0%, 100% {
+
+  0%,
+  100% {
     transform: translateY(0px);
   }
+
   50% {
     transform: translateY(-8px);
   }
@@ -76,9 +81,11 @@
     top: 0%;
     opacity: 0.85;
   }
+
   50% {
     opacity: 1;
   }
+
   100% {
     top: 100%;
     opacity: 0.2;
@@ -86,10 +93,13 @@
 }
 
 @keyframes gentleGlow {
-  0%, 100% {
+
+  0%,
+  100% {
     opacity: 0.40;
     transform: scale(1);
   }
+
   50% {
     opacity: 0.70;
     transform: scale(1.06);
