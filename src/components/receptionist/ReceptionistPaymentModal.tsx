@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Invoice, Patient } from '../../types';
-import { X, CreditCard, QrCode, Banknote, Landmark, Wallet, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { X, CreditCard, QrCode, Banknote, Landmark, Wallet, CheckCircle2, ShieldCheck, Sparkles } from 'lucide-react';
+import { paymentService, cleanPrefillValue } from '../../utils/paymentService';
+import { StorageService } from '../../utils/storage';
 
 interface ReceptionistPaymentModalProps {
   invoice: Invoice;
@@ -17,13 +19,69 @@ export const ReceptionistPaymentModal: React.FC<ReceptionistPaymentModalProps> =
 }) => {
   const balance = Number(invoice.balanceDue || 0);
   const [payAmount, setPayAmount] = useState<number>(balance);
-  const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'Cash' | 'Card' | 'Net Banking'>('UPI');
+  const [paymentMethod, setPaymentMethod] = useState<'Razorpay' | 'UPI' | 'Cash' | 'Card' | 'Net Banking'>('Razorpay');
   const [isProcessing, setIsProcessing] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (payAmount <= 0) return;
     setIsProcessing(true);
+
+    if (paymentMethod === 'Razorpay') {
+      const amountInPaise = Math.round(payAmount * 100);
+      try {
+        const order = await paymentService.createRazorpayOrderApi(amountInPaise, 'INR', invoice.invoiceNumber, invoice.id);
+
+        // Retrieve the patient associated with the current bill/invoice
+        const billPatient =
+          patient ||
+          StorageService.getPatients().find(p => p.id === invoice.patientId) ||
+          (invoice.patientCode ? StorageService.getPatients().find(p => p.code === invoice.patientCode) : undefined);
+
+        const patientName = cleanPrefillValue(billPatient?.name) || cleanPrefillValue(invoice.patientName);
+        const patientEmail = cleanPrefillValue(billPatient?.email);
+        const patientPhone = cleanPrefillValue(billPatient?.phone);
+
+        await paymentService.openRazorpayCheckout({
+          orderId: order.order_id || order.id,
+          amountInPaise,
+          currency: order.currency || 'INR',
+          keyId: (order as any).key_id,
+          name: 'Oralix Dental Care',
+          description: `Front Desk Invoice #${invoice.invoiceNumber}`,
+          invoiceNumber: invoice.invoiceNumber,
+          patientName,
+          patientEmail,
+          patientPhone,
+          patient: billPatient,
+          onSuccess: async (paymentData) => {
+            try {
+              const res = await paymentService.verifyRazorpayPaymentApi({
+                ...paymentData,
+                bill_id: invoice.id
+              });
+              if (res.success) {
+                onCompletePayment(invoice.id, payAmount, 'Razorpay');
+                setIsProcessing(false);
+                onClose();
+              }
+            } catch (err: any) {
+              alert(err?.message || 'Razorpay signature verification failed.');
+              setIsProcessing(false);
+            }
+          },
+          onDismiss: () => setIsProcessing(false),
+          onFailure: (err) => {
+            alert(`Razorpay payment failed: ${err?.description || 'Transaction cancelled'}`);
+            setIsProcessing(false);
+          }
+        });
+      } catch (err: any) {
+        alert(`Failed to create Razorpay order: ${err?.message || 'Server error'}`);
+        setIsProcessing(false);
+      }
+      return;
+    }
 
     setTimeout(() => {
       onCompletePayment(invoice.id, payAmount, paymentMethod);
@@ -91,6 +149,7 @@ export const ReceptionistPaymentModal: React.FC<ReceptionistPaymentModalProps> =
             </label>
             <div className="grid grid-cols-2 gap-2">
               {[
+                { id: 'Razorpay', label: 'Razorpay Checkout', icon: CreditCard },
                 { id: 'UPI', label: 'UPI / QR', icon: QrCode },
                 { id: 'Cash', label: 'Cash Desk', icon: Banknote },
                 { id: 'Card', label: 'Card POS', icon: CreditCard },

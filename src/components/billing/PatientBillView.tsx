@@ -11,7 +11,8 @@ import {
 } from '../../types';
 import { useToast } from '../common/Toast';
 import { formatIndianRupees, treatmentService } from '../../utils/treatmentService';
-import { StorageService } from '../../utils/storage';
+import { StorageService, mapRowToInvoice } from '../../utils/storage';
+import { supabase } from '../../utils/supabaseClient';
 import {
   ArrowLeft,
   Save,
@@ -49,11 +50,12 @@ interface PatientBillViewProps {
   appointment?: Appointment | null;
   treatmentPlans?: TreatmentPlan[];
   catalogueItems?: TreatmentCatalogueItem[];
+  existingInvoices?: Invoice[];
   onSave: (
     updatedInvoice: Invoice,
     updatedPatientData: { age: number; gender: 'Male' | 'Female' | 'Other' },
     sendToReceptionist?: boolean
-  ) => void;
+  ) => boolean | Promise<boolean | void> | void;
   onDeleteInvoice?: (invoiceId: string) => void;
   onBack: () => void;
 }
@@ -72,6 +74,7 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
   appointment,
   treatmentPlans = [],
   catalogueItems = [],
+  existingInvoices = [],
   onSave,
   onDeleteInvoice,
   onBack
@@ -121,6 +124,60 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
   }, [isTreatmentModalOpen, loadRealTreatments]);
 
   // 1. Patient Header Info (Editable & Verifiable)
+  const effectivePatientName = patient.name || appointment?.patientName || invoice?.patientName || 'Patient';
+  const effectivePatientPhone = patient.phone || appointment?.patientPhone || invoice?.patientPhone || '';
+  const effectivePatientEmail = patient.email || appointment?.patientEmail || invoice?.patientEmail || '';
+  const effectiveAppointmentId = appointment?.id || invoice?.appointmentId || null;
+
+  // Duplicate Bill Prevention State
+  const isEditingExistingInvoice = Boolean(invoice?.id);
+  const [existingAppointmentBill, setExistingAppointmentBill] = useState<Invoice | null>(() => {
+    if (isEditingExistingInvoice || !effectiveAppointmentId) return null;
+    const invs = existingInvoices.length > 0 ? existingInvoices : StorageService.getInvoices();
+    return invs.find(i => i.appointmentId === effectiveAppointmentId) || null;
+  });
+
+  useEffect(() => {
+    if (isEditingExistingInvoice || !effectiveAppointmentId) {
+      setExistingAppointmentBill(null);
+      return;
+    }
+
+    // Check prop or local storage invoices
+    const invs = existingInvoices.length > 0 ? existingInvoices : StorageService.getInvoices();
+    const localMatch = invs.find(i => i.appointmentId === effectiveAppointmentId);
+    if (localMatch) {
+      setExistingAppointmentBill(localMatch);
+      return;
+    }
+
+    // Authoritative check against Supabase backend
+    let isMounted = true;
+    const checkBackend = async () => {
+      try {
+        const { data } = await supabase
+          .from('invoices')
+          .select('*')
+          .eq('appointment_id', effectiveAppointmentId)
+          .maybeSingle();
+        if (!isMounted) return;
+        if (data) {
+          setExistingAppointmentBill(mapRowToInvoice(data));
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+    checkBackend();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isEditingExistingInvoice, effectiveAppointmentId, existingInvoices]);
+
+  const [patientPhone, setPatientPhone] = useState<string>(effectivePatientPhone);
+  const [patientEmail, setPatientEmail] = useState<string>(effectivePatientEmail);
+
   const [patientAge, setPatientAge] = useState<number | ''>(
     invoice?.patientAge !== undefined ? invoice.patientAge : patient.age || ''
   );
@@ -128,12 +185,23 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
     invoice?.patientGender || patient.gender || 'Male'
   );
 
+  // Sync state if patient/appointment prop updates
+  useEffect(() => {
+    if (patient.phone || appointment?.patientPhone || invoice?.patientPhone) {
+      setPatientPhone(patient.phone || appointment?.patientPhone || invoice?.patientPhone || '');
+    }
+    if (patient.email || appointment?.patientEmail || invoice?.patientEmail) {
+      setPatientEmail(patient.email || appointment?.patientEmail || invoice?.patientEmail || '');
+    }
+  }, [patient.phone, patient.email, appointment?.patientPhone, appointment?.patientEmail, invoice?.patientPhone, invoice?.patientEmail]);
+
   // Stable ID and Invoice Number (prevents generating duplicate IDs or duplicate bills on multiple clicks)
   const [currentInvoiceId] = useState<string>(() => invoice?.id || `inv-${Date.now()}`);
   const [currentInvoiceNumber] = useState<string>(
     () => invoice?.invoiceNumber || `INV-2026-${Math.floor(100 + Math.random() * 900)}`
   );
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // 2. Appointment Details (from appointment or invoice, editable if needed)
   const [appointmentDate, setAppointmentDate] = useState<string>(
@@ -583,17 +651,19 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
       id: currentInvoiceId,
       invoiceNumber: currentInvoiceNumber,
       patientId: patient.id,
-      patientName: patient.name,
+      patientName: effectivePatientName,
       patientCode: patient.code,
       patientAge: validAge,
       patientGender: validGender,
-      date: appointmentDate || new Date().toISOString().split('T')[0],
+      patientPhone: patientPhone.trim() || effectivePatientPhone || undefined,
+      patientEmail: patientEmail.trim() || effectivePatientEmail || undefined,
+      date: invoice?.date || new Date().toISOString().split('T')[0],
       dueDate: invoice?.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
       items: invoiceItems,
       description: validItems.map(i => i.description).join(', '),
       diagnosis: diagnosis.trim() || undefined,
       attendingDoctor: attendingDoctor.trim() || undefined,
-      appointmentId: appointment?.id || invoice?.appointmentId,
+      appointmentId: effectiveAppointmentId || undefined,
       appointmentDate: appointmentDate,
       appointmentTime: appointmentTime,
       chiefComplaint: chiefComplaint.trim() || undefined,
@@ -616,16 +686,26 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
   };
 
   // Handler: Save Changes (closes patient bill and automatically synchronizes to Receptionist desk)
-  const handleSaveBill = (e?: React.FormEvent | React.MouseEvent) => {
+  const handleSaveBill = async (e?: React.FormEvent | React.MouseEvent) => {
     if (e && e.preventDefault) {
       e.preventDefault();
     }
     if (isSaving) return;
+    setSaveError(null);
+
+    // Prevent duplicate bill creation if one already exists for this appointment
+    if (existingAppointmentBill) {
+      const duplicateMsg = 'Bill Already Created: A bill has already been created for this patient/appointment. You cannot create another bill for the same appointment.';
+      setSaveError(duplicateMsg);
+      showToast(duplicateMsg, 'error');
+      return;
+    }
+
     const updatedInvoice = createUpdatedInvoice();
 
     setIsSaving(true);
     try {
-      onSave(
+      const res = await onSave(
         updatedInvoice,
         {
           age: updatedInvoice.patientAge || 32,
@@ -633,8 +713,15 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
         },
         true
       );
-    } finally {
+      if (res === false) {
+        setSaveError('Bill Already Created: A bill has already been created for this patient/appointment. You cannot create another bill for the same appointment.');
+        setIsSaving(false);
+        return;
+      }
       onBack();
+    } catch (err: any) {
+      setSaveError(err?.message || 'Bill Already Created: A bill has already been created for this patient/appointment. You cannot create another bill for the same appointment.');
+      setIsSaving(false);
     }
   };
 
@@ -652,25 +739,69 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
             <span>&larr; Back to Billing Table</span>
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="px-2.5 py-0.5 rounded-full bg-[#EDE8DE] text-[#252525] text-[10px] font-extrabold uppercase tracking-wider border border-[#C8B58D]/30">
               PATIENT BILL &bull; CLINICAL INVOICE DETAIL
+            </span>
+            <span className="px-2.5 py-0.5 rounded-full bg-[#8FA88D]/20 text-[#3B4D3A] text-[10px] font-extrabold uppercase tracking-wider border border-[#8FA88D]/30">
+              ROLE: PATIENT
             </span>
             {invoice?.invoiceNumber && (
               <span className="px-2 py-0.5 rounded-md bg-stone-100 text-stone-700 text-[10px] font-mono font-bold">
                 {invoice.invoiceNumber}
               </span>
             )}
+            {effectiveAppointmentId ? (
+              <span className="px-2 py-0.5 rounded-md bg-sky-50 text-sky-800 border border-sky-200 text-[10px] font-mono font-bold">
+                APT: {effectiveAppointmentId}
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded-md bg-stone-100 text-stone-600 text-[10px] font-bold">
+                Direct Bill (No Appointment)
+              </span>
+            )}
           </div>
 
           <h1 className="text-2xl sm:text-3xl font-black text-[#252525] tracking-tight">
-            {patient.name}
+            {effectivePatientName}
           </h1>
-          <p className="text-xs text-[#6F6D69]">
-            Patient ID: <strong className="text-[#252525]">{patient.code}</strong> &bull; Contact: {patient.phone} &bull; Email: {patient.email}
+          <p className="text-xs text-[#6F6D69] flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span>Patient ID: <strong className="text-[#252525]">{patient.code || 'PATIENT'}</strong></span>
+            <span>&bull;</span>
+            <span>Contact: <strong className="text-[#252525]">{patientPhone || effectivePatientPhone || 'Not specified'}</strong></span>
+            <span>&bull;</span>
+            <span>Email: <strong className="text-[#252525]">{patientEmail || effectivePatientEmail || 'Not specified'}</strong></span>
+            {effectiveAppointmentId && (
+              <>
+                <span>&bull;</span>
+                <span>Date: <strong className="text-[#252525]">{appointmentDate}</strong> at <strong className="text-[#252525]">{appointmentTime}</strong></span>
+              </>
+            )}
           </p>
         </div>
       </div>
+
+      {/* Duplicate Bill Warning Banner */}
+      {existingAppointmentBill && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-2xl p-5 shadow-sm space-y-2 animate-in fade-in">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+              <AlertCircle className="w-5 h-5 text-rose-700" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-rose-900">Bill Already Created</h3>
+              <p className="text-xs text-rose-700">
+                A bill has already been created for this patient/appointment. You cannot create another bill for the same appointment.
+              </p>
+            </div>
+          </div>
+          <div className="pt-1 flex items-center gap-3">
+            <span className="text-xs font-mono font-bold text-rose-800 bg-rose-100/80 px-2.5 py-1 rounded-lg border border-rose-200">
+              Existing Bill: {existingAppointmentBill.invoiceNumber}
+            </span>
+          </div>
+        </div>
+      )}
 
       <form noValidate onSubmit={handleSaveBill} className="space-y-6">
         {/* 2. PATIENT & APPOINTMENT HEADER INFORMATION */}
@@ -687,9 +818,38 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
                   <p className="text-[11px] text-[#6F6D69]">Verify core clinical demographics</p>
                 </div>
               </div>
+              <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-[#EDE8DE] text-[#252525] border border-[#C8B58D]/30">
+                Patient
+              </span>
             </div>
 
             <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-[#252525] mb-1">
+                  Contact Phone / Mobile
+                </label>
+                <input
+                  type="text"
+                  value={patientPhone}
+                  onChange={e => setPatientPhone(e.target.value)}
+                  placeholder="+91 98765 43210"
+                  className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525] font-semibold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[#252525] mb-1">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  value={patientEmail}
+                  onChange={e => setPatientEmail(e.target.value)}
+                  placeholder="patient@example.com"
+                  className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-[#C8B58D] text-[#252525] font-semibold"
+                />
+              </div>
+
               <div>
                 <label className="block text-xs font-bold text-[#252525] mb-1">
                   Age (Years) <span className="text-red-500">*</span>
@@ -750,11 +910,22 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
                   <p className="text-[11px] text-[#6F6D69]">Relevant appointment details linked to this bill</p>
                 </div>
               </div>
-              {appointment && (
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#8FA88D]/20 text-[#3B4D3A] border border-[#8FA88D]/30">
-                  {appointment.status.replace('_', ' ').toUpperCase()}
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {effectiveAppointmentId ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-sky-50 text-sky-800 border border-sky-200">
+                    APT #{effectiveAppointmentId}
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-stone-100 text-stone-600">
+                    Manual Bill
+                  </span>
+                )}
+                {appointment && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#8FA88D]/20 text-[#3B4D3A] border border-[#8FA88D]/30">
+                    {appointment.status.replace('_', ' ').toUpperCase()}
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1388,6 +1559,13 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
 
         {/* 5. BOTTOM ACTIONS BAR */}
         <div className="p-4 bg-white/95 backdrop-blur-md rounded-2xl border border-stone-200/90 shadow-md flex flex-col sm:flex-row items-center justify-between gap-3 sticky bottom-4 z-20">
+          {saveError && (
+            <div className="w-full p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-bold flex items-center gap-2 animate-in fade-in duration-200">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{saveError}</span>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 text-xs text-[#6F6D69]">
             <CheckCircle2 className="w-4 h-4 text-[#8FA88D]" />
             <span>
@@ -1420,13 +1598,13 @@ export const PatientBillView: React.FC<PatientBillViewProps> = ({
 
             <button
               type="button"
-              disabled={isSaving}
+              disabled={isSaving || Boolean(existingAppointmentBill)}
               onClick={handleSaveBill}
-              className="btn-primary text-xs cursor-pointer flex items-center gap-2 py-2.5 px-5 disabled:opacity-50 shadow-sm"
-              title="Save Changes"
+              className="btn-primary text-xs cursor-pointer flex items-center gap-2 py-2.5 px-5 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
+              title={existingAppointmentBill ? "A bill has already been created for this appointment" : "Save Changes"}
             >
               <Save className="w-4 h-4 text-[#252525]" />
-              <span>{isSaving ? 'Saving...' : 'Save Changes'}</span>
+              <span>{existingAppointmentBill ? 'Bill Already Created' : isSaving ? 'Saving...' : 'Save Changes'}</span>
             </button>
           </div>
         </div>

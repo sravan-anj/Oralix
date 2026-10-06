@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Appointment, Patient, User, AppointmentStatus } from '../../types';
 import { useToast } from '../common/Toast';
+import { StorageService } from '../../utils/storage';
 import {
   Calendar,
   Clock,
@@ -21,14 +22,17 @@ import {
   PhoneCall,
   Smile,
   ShieldCheck,
-  Receipt
+  Receipt,
+  Trash2
 } from 'lucide-react';
 
 interface AppointmentsViewProps {
   currentUser: User;
   appointments: Appointment[];
   patients: Patient[];
+  invoices?: any[];
   onSaveAppointments: (appointments: Appointment[]) => void;
+  onDeleteAppointmentAndPatient?: (appointmentId: string, patientId: string) => Promise<void> | void;
   onSelectPatient: (patientId: string) => void;
   onNavigateToChart: () => void;
   onNavigateToBilling?: (patientId: string, appointmentId?: string) => void;
@@ -40,7 +44,9 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   currentUser,
   appointments,
   patients,
+  invoices = [],
   onSaveAppointments,
+  onDeleteAppointmentAndPatient,
   onSelectPatient,
   onNavigateToChart,
   onNavigateToBilling,
@@ -50,23 +56,19 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
   const { showToast } = useToast();
   const isPatient = currentUser.role === 'patient';
   const currentPatient = isPatient
-    ? patients.find(p => p.id === (currentUser.patientId || 'p-1')) || patients[0]
+    ? patients.find(p => currentUser.patientId && p.id === currentUser.patientId) ||
+      patients.find(p => currentUser.email && p.email?.toLowerCase() === currentUser.email.toLowerCase()) ||
+      patients.find(p => currentUser.phone && p.phone === currentUser.phone) ||
+      patients.find(p => p.name.toLowerCase() === currentUser.name.toLowerCase()) ||
+      patients[0]
     : null;
 
   const [patientSubTab, setPatientSubTab] = useState<'upcoming' | 'history'>('upcoming');
   const [filterDoctor, setFilterDoctor] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-
-  // New Appointment Form State
-  const [newPatientId, setNewPatientId] = useState(patients[0]?.id || '');
-  const [newDoctorName, setNewDoctorName] = useState('Dr. Ananya Sharma');
-  const [newChair, setNewChair] = useState('Chair 1 - Endodontics');
-  const [newDate, setNewDate] = useState('2026-09-19');
-  const [newTime, setNewTime] = useState('12:00 PM');
-  const [newDuration, setNewDuration] = useState(45);
-  const [newProcedure, setNewProcedure] = useState('Dental Examination & Assessment');
-  const [newNotes, setNewNotes] = useState('');
+  const [appointmentToDelete, setAppointmentToDelete] = useState<Appointment | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const filteredAppointments = appointments.filter(apt => {
     if (filterDoctor !== 'all' && apt.doctorName !== filterDoctor) return false;
@@ -90,32 +92,12 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
     showToast(`Appointment status updated to ${newStatus.replace('_', ' ')}`, 'success');
   };
 
-  const handleCreateAppointment = (e: React.FormEvent) => {
-    e.preventDefault();
-    const patient = patients.find(p => p.id === newPatientId) || patients[0];
-    const newApt: Appointment = {
-      id: `apt-${Date.now()}`,
-      patientId: patient.id,
-      patientName: patient.name,
-      doctorName: newDoctorName,
-      doctorId: 'u-doctor',
-      chair: newChair,
-      date: newDate,
-      time: newTime,
-      durationMinutes: newDuration,
-      procedure: newProcedure,
-      status: 'confirmed',
-      tokenNumber: `#D-${Math.floor(100 + Math.random() * 900)}`,
-      notes: newNotes
-    };
-
-    onSaveAppointments([newApt, ...appointments]);
-    setIsBookingModalOpen(false);
-    showToast(`Booked appointment for ${patient.name} with ${newDoctorName}`, 'success');
-  };
-
   const patientAppointments = appointments.filter(
-    a => a.patientId === (currentPatient?.id || 'p-1')
+    a =>
+      (currentPatient && a.patientId === currentPatient.id) ||
+      (currentUser.email && a.patientEmail?.toLowerCase() === currentUser.email.toLowerCase()) ||
+      (currentUser.name && a.patientName.toLowerCase() === currentUser.name.toLowerCase()) ||
+      (currentPatient && a.patientName.toLowerCase() === currentPatient.name.toLowerCase())
   );
   const upcomingPatientApts = patientAppointments.filter(
     a => a.status !== 'completed' && a.status !== 'cancelled'
@@ -366,148 +348,6 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
             </div>
           </div>
         </div>
-
-        {/* Book Appointment Modal */}
-        {isBookingModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/40 backdrop-blur-xs">
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-lg p-6 space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <div>
-                  <h2 className="text-base font-extrabold text-slate-900">Book Dental Appointment</h2>
-                  <p className="text-xs text-slate-500">Patient: {currentPatient.name} ({currentPatient.code})</p>
-                </div>
-                <button
-                  onClick={() => setIsBookingModalOpen(false)}
-                  className="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 flex items-center justify-center text-sm cursor-pointer"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <form onSubmit={handleCreateAppointment} className="space-y-3.5">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Doctor *
-                    </label>
-                    <select
-                      value={newDoctorName}
-                      onChange={e => setNewDoctorName(e.target.value)}
-                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl bg-white focus:ring-2 focus:ring-sky-500"
-                    >
-                      <option value="Dr. Ananya Sharma">Dr. Ananya Sharma (Endodontics)</option>
-                      <option value="Dr. Vikram Mehta">Dr. Vikram Mehta (Surgery &amp; Implants)</option>
-                      <option value="Dr. Priya Sen">Dr. Priya Sen (Aesthetics &amp; Ortho)</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Operatory Chair *
-                    </label>
-                    <select
-                      value={newChair}
-                      onChange={e => setNewChair(e.target.value)}
-                      className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl bg-white focus:ring-2 focus:ring-sky-500"
-                    >
-                      <option value="Chair 1 - Endodontics">Chair 1 - Endodontics</option>
-                      <option value="Chair 2 - Surgery">Chair 2 - Surgery</option>
-                      <option value="Chair 3 - Aesthetics & Hygiene">Chair 3 - Hygiene</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Date *
-                    </label>
-                    <input
-                      type="date"
-                      value={newDate}
-                      onChange={e => setNewDate(e.target.value)}
-                      required
-                      className="w-full px-2.5 py-2 text-xs border border-slate-200 rounded-xl bg-white focus:ring-2 focus:ring-sky-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Time *
-                    </label>
-                    <input
-                      type="text"
-                      value={newTime}
-                      onChange={e => setNewTime(e.target.value)}
-                      placeholder="10:30 AM"
-                      required
-                      className="w-full px-2.5 py-2 text-xs border border-slate-200 rounded-xl bg-white focus:ring-2 focus:ring-sky-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Duration
-                    </label>
-                    <select
-                      value={newDuration}
-                      onChange={e => setNewDuration(Number(e.target.value))}
-                      className="w-full px-2.5 py-2 text-xs border border-slate-200 rounded-xl bg-white focus:ring-2 focus:ring-sky-500"
-                    >
-                      <option value={15}>15 mins</option>
-                      <option value={30}>30 mins</option>
-                      <option value={45}>45 mins</option>
-                      <option value={60}>60 mins</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Procedure / Reason for Visit *
-                  </label>
-                  <input
-                    type="text"
-                    value={newProcedure}
-                    onChange={e => setNewProcedure(e.target.value)}
-                    placeholder="e.g. Tooth #16 Zirconia Crown Delivery"
-                    required
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl bg-white focus:ring-2 focus:ring-sky-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Notes for Doctor
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={newNotes}
-                    onChange={e => setNewNotes(e.target.value)}
-                    placeholder="Any sensitivity or special requests..."
-                    className="w-full px-3 py-2 text-xs border border-slate-200 rounded-xl bg-white focus:ring-2 focus:ring-sky-500"
-                  />
-                </div>
-
-                <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setIsBookingModalOpen(false)}
-                    className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2 text-xs font-bold bg-gradient-to-r from-sky-600 to-blue-700 hover:from-sky-500 hover:to-blue-600 text-white rounded-xl shadow-xs transition cursor-pointer"
-                  >
-                    Confirm Appointment
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
@@ -692,48 +532,83 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
                     </td>
 
                     <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => {
-                            onSelectPatient(apt.patientId);
-                            if (onNavigateToBilling) {
-                              onNavigateToBilling(apt.patientId, apt.id);
-                            } else {
-                              onNavigateToChart();
-                            }
-                          }}
-                          className="px-2 py-1 text-[11px] font-semibold bg-stone-100 text-stone-700 hover:bg-[#EDE8DE] hover:text-[#252525] rounded transition cursor-pointer flex items-center gap-1"
-                          title={`View / Edit Bill for ${apt.patientName}`}
-                        >
-                          <Receipt className="w-3 h-3 text-[#C8B58D]" />
-                          <span>Bill</span>
-                        </button>
-                        {apt.status !== 'in_chair' && apt.status !== 'completed' && (
-                          <button
-                            onClick={() => handleUpdateStatus(apt.id, 'in_chair')}
-                            className="px-2 py-1 text-[11px] font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 rounded transition cursor-pointer"
-                          >
-                            To Chair
-                          </button>
-                        )}
-                        {apt.status !== 'completed' && (
-                          <button
-                            onClick={() => handleUpdateStatus(apt.id, 'completed')}
-                            className="px-2 py-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded transition cursor-pointer"
-                          >
-                            Complete
-                          </button>
-                        )}
-                        {apt.status !== 'cancelled' && (
-                          <button
-                            onClick={() => handleUpdateStatus(apt.id, 'cancelled')}
-                            className="p-1 text-gray-400 hover:text-rose-600 rounded transition cursor-pointer"
-                            title="Cancel appointment"
-                          >
-                            <XCircle className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
+                      {(() => {
+                        const existingInv = (invoices || []).find((inv: any) => inv.appointmentId === apt.id);
+                        return (
+                          <div className="flex items-center justify-end gap-1.5">
+                            {existingInv ? (
+                              <button
+                                onClick={() => {
+                                  onSelectPatient(apt.patientId);
+                                  if (onNavigateToBilling) {
+                                    onNavigateToBilling(apt.patientId, apt.id);
+                                  } else {
+                                    onNavigateToChart();
+                                  }
+                                }}
+                                className="px-2 py-1 text-[11px] font-bold bg-emerald-50 text-emerald-800 hover:bg-emerald-100 border border-emerald-200 rounded transition cursor-pointer flex items-center gap-1"
+                                title={`Bill Created (${existingInv.invoiceNumber}) - Click to view/edit bill`}
+                              >
+                                <Receipt className="w-3 h-3 text-emerald-600" />
+                                <span>Bill Created</span>
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  onSelectPatient(apt.patientId);
+                                  if (onNavigateToBilling) {
+                                    onNavigateToBilling(apt.patientId, apt.id);
+                                  } else {
+                                    onNavigateToChart();
+                                  }
+                                }}
+                                className="px-2 py-1 text-[11px] font-semibold bg-stone-100 text-stone-700 hover:bg-[#EDE8DE] hover:text-[#252525] rounded transition cursor-pointer flex items-center gap-1"
+                                title={`Create Bill for ${apt.patientName}`}
+                              >
+                                <Receipt className="w-3 h-3 text-[#C8B58D]" />
+                                <span>Create Bill</span>
+                              </button>
+                            )}
+
+                            {apt.status !== 'in_chair' && apt.status !== 'completed' && apt.status !== 'cancelled' && (
+                              <button
+                                onClick={() => handleUpdateStatus(apt.id, 'in_chair')}
+                                className="px-2 py-1 text-[11px] font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 rounded transition cursor-pointer"
+                              >
+                                To Chair
+                              </button>
+                            )}
+
+                            {apt.status !== 'completed' && apt.status !== 'cancelled' && (
+                              <button
+                                onClick={() => handleUpdateStatus(apt.id, 'completed')}
+                                className="px-2 py-1 text-[11px] font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded transition cursor-pointer"
+                              >
+                                Complete
+                              </button>
+                            )}
+
+                            {apt.status !== 'cancelled' ? (
+                              <button
+                                onClick={() => handleUpdateStatus(apt.id, 'cancelled')}
+                                className="p-1 text-gray-400 hover:text-rose-600 rounded transition cursor-pointer"
+                                title="Cancel appointment"
+                              >
+                                <XCircle className="w-4 h-4" />
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => setAppointmentToDelete(apt)}
+                                className="px-2 py-1 text-[11px] font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 rounded transition cursor-pointer flex items-center gap-1"
+                                title="Permanently delete cancelled appointment and patient data"
+                              >
+                                <Trash2 className="w-3 h-3 text-rose-600" />
+                                <span>Delete</span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))
@@ -743,159 +618,57 @@ export const AppointmentsView: React.FC<AppointmentsViewProps> = ({
         </div>
       </div>
 
-      {/* Book Appointment Modal - Patient Context Only */}
-      {isBookingModalOpen && isPatient && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-          <div className="bg-white rounded-lg border border-gray-200 shadow-xl w-full max-w-lg p-6 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-              <h2 className="text-base font-bold text-gray-900">Schedule New Appointment</h2>
+      {/* Delete Appointment Confirmation Dialog */}
+      {appointmentToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl border border-stone-200 shadow-2xl w-full max-w-md p-6 space-y-4 text-[#252525]">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <AlertCircle className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">Delete Appointment?</h3>
+                <p className="text-xs text-gray-500 font-mono">Patient: {appointmentToDelete.patientName}</p>
+              </div>
+            </div>
+            <p className="text-xs text-gray-600 leading-relaxed bg-rose-50/70 border border-rose-100 rounded-xl p-3">
+              This will permanently delete this appointment and its associated patient data. This action cannot be undone.
+            </p>
+            <div className="flex items-center justify-end gap-2.5 pt-2">
               <button
-                onClick={() => setIsBookingModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600 text-sm cursor-pointer"
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setAppointmentToDelete(null)}
+                className="px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-100 rounded-xl transition cursor-pointer"
               >
-                ✕
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={async () => {
+                  if (!appointmentToDelete) return;
+                  setIsDeleting(true);
+                  try {
+                    if (onDeleteAppointmentAndPatient) {
+                      await onDeleteAppointmentAndPatient(appointmentToDelete.id, appointmentToDelete.patientId);
+                    } else {
+                      await StorageService.deleteAppointmentAndPatient(appointmentToDelete.id, appointmentToDelete.patientId);
+                      onSaveAppointments(appointments.filter(a => a.id !== appointmentToDelete.id));
+                    }
+                    setAppointmentToDelete(null);
+                  } catch (err: any) {
+                    showToast(err?.message || 'Failed to delete appointment', 'error');
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeleting ? 'Deleting...' : 'Delete'}</span>
               </button>
             </div>
-
-            <form onSubmit={handleCreateAppointment} className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Select Patient *
-                </label>
-                <select
-                  value={newPatientId}
-                  onChange={e => setNewPatientId(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                >
-                  {patients.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.code}) - {p.phone}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Doctor *
-                  </label>
-                  <select
-                    value={newDoctorName}
-                    onChange={e => setNewDoctorName(e.target.value)}
-                    className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                  >
-                    <option value="Dr. Ananya Sharma">Dr. Ananya Sharma (Endodontics)</option>
-                    <option value="Dr. Vikram Mehta">Dr. Vikram Mehta (Surgery)</option>
-                    <option value="Dr. Priya Sen">Dr. Priya Sen (Aesthetics & Ortho)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Operatory Chair *
-                  </label>
-                  <select
-                    value={newChair}
-                    onChange={e => setNewChair(e.target.value)}
-                    className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                  >
-                    <option value="Chair 1 - Endodontics">Chair 1 - Endodontics</option>
-                    <option value="Chair 2 - Surgery">Chair 2 - Surgery</option>
-                    <option value="Chair 3 - Aesthetics & Hygiene">Chair 3 - Aesthetics</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Date *
-                  </label>
-                  <input
-                    type="date"
-                    value={newDate}
-                    onChange={e => setNewDate(e.target.value)}
-                    required
-                    className="w-full px-2.5 py-1.5 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Time *
-                  </label>
-                  <input
-                    type="text"
-                    value={newTime}
-                    onChange={e => setNewTime(e.target.value)}
-                    placeholder="10:30 AM"
-                    required
-                    className="w-full px-2.5 py-1.5 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-gray-700 mb-1">
-                    Duration (mins)
-                  </label>
-                  <select
-                    value={newDuration}
-                    onChange={e => setNewDuration(Number(e.target.value))}
-                    className="w-full px-2.5 py-1.5 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                  >
-                    <option value={15}>15 mins</option>
-                    <option value={30}>30 mins</option>
-                    <option value={45}>45 mins</option>
-                    <option value={60}>60 mins</option>
-                    <option value={90}>90 mins</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Procedure / Reason for Visit *
-                </label>
-                <input
-                  type="text"
-                  value={newProcedure}
-                  onChange={e => setNewProcedure(e.target.value)}
-                  placeholder="e.g. Tooth #16 Root Canal Preparation"
-                  required
-                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Clinical Pre-visit Notes / Precautions
-                </label>
-                <textarea
-                  rows={2}
-                  value={newNotes}
-                  onChange={e => setNewNotes(e.target.value)}
-                  placeholder="e.g. Check blood pressure before local anesthetic..."
-                  className="w-full px-3 py-2 text-xs border border-gray-200 rounded-md bg-white focus:ring-1 focus:ring-blue-600"
-                />
-              </div>
-
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => setIsBookingModalOpen(false)}
-                  className="px-3.5 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-100 rounded-md transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition shadow-2xs cursor-pointer"
-                >
-                  Confirm Appointment
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}

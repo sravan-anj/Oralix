@@ -1,496 +1,775 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { ToothIcon } from '../common/ToothIcon';
-import { Appointment, Patient } from '../../types';
+import { Appointment, Patient, User } from '../../types';
 import { useToast } from '../common/Toast';
+import { supabase } from '../../utils/supabaseClient';
+import { StorageService } from '../../utils/storage';
 import {
   Calendar,
   Clock,
   CheckCircle2,
   X,
-  UserCheck,
+  AlertCircle,
+  Loader2,
+  Ban,
+  Check,
   Sparkles,
-  ChevronRight,
-  ChevronLeft,
-  Stethoscope,
-  ShieldCheck,
-  Check
+  Phone,
+  Mail,
+  User as UserIcon,
+  Stethoscope
 } from 'lucide-react';
 
 interface PublicBookingModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onBookAppointment: (newApt: Appointment) => void;
-  existingPatients: Patient[];
+  onBookAppointment: (newApt: Appointment) => void | Promise<void>;
+  existingPatients?: Patient[];
+  currentUser?: User | null;
 }
 
-const SERVICES = [
-  { id: 's-1', name: 'Dental Examination & Hygiene Assessment', fee: 1500, duration: 30, desc: 'Comprehensive intraoral check-up, digital X-rays & plaque evaluation' },
-  { id: 's-2', name: 'Root Canal Therapy & Endodontics', fee: 8500, duration: 60, desc: 'Microscopic painless pulp extirpation & sealing for infected teeth' },
-  { id: 's-3', name: 'Zirconia Crown & Restorative Core', fee: 12000, duration: 45, desc: '3D CAD/CAM scan, precision crown prep & shade matching' },
-  { id: 's-4', name: 'Teeth Whitening & Polish', fee: 5000, duration: 45, desc: 'Laser accelerated enamel bleaching & stain removal' },
-  { id: 's-5', name: 'Invisalign & Orthodontic Consultation', fee: 2500, duration: 30, desc: 'Digital bite alignment analysis & clear aligner treatment plan' },
-  { id: 's-6', name: 'Emergency Pain Relief & X-Ray', fee: 2000, duration: 30, desc: 'Immediate diagnosis, prescription & emergency stabilization' }
-];
+// 1. Extensible list of Dental Treatment Options
+export const REASONS_FOR_VISIT = [
+  'Root Canal',
+  'Dental Cleaning',
+  'Fillers',
+  'Tooth Implant',
+  'Braces',
+  'Tooth Extraction',
+  'Teeth Whitening',
+  'Dental Check-up',
+  'Crown',
+  'Bridge',
+  'Denture',
+  'Gum Treatment',
+  'Other'
+] as const;
 
-const DOCTORS = [
-  { id: 'd-1', name: 'Dr. Ananya Sharma', specialty: 'Endodontics & Restorative Surgery', qualification: 'MDS (Endodontics)', exp: '12+ Yrs Exp' },
-  { id: 'd-2', name: 'Dr. Vikram Mehta', specialty: 'Oral & Maxillofacial Surgery', qualification: 'MDS (Oral Surgery)', exp: '15+ Yrs Exp' },
-  { id: 'd-3', name: 'Dr. Rajesh Verma', specialty: 'Periodontics & Dental Implants', qualification: 'MDS (Periodontics)', exp: '10+ Yrs Exp' },
-  { id: 'd-4', name: 'Dr. Priya Nair', specialty: 'Aesthetic Dentistry & Orthodontics', qualification: 'MDS (Orthodontics)', exp: '8+ Yrs Exp' }
-];
+export type ReasonForVisit = typeof REASONS_FOR_VISIT[number];
 
-const TIME_SLOTS = [
-  '09:30 AM',
-  '10:30 AM',
-  '11:30 AM',
+// Standard Clinic Operating Slots (09:00 AM to 05:00 PM)
+export const CLINIC_TIME_SLOTS = [
+  '09:00 AM',
+  '10:00 AM',
+  '11:00 AM',
+  '12:00 PM',
+  '01:00 PM',
   '02:00 PM',
-  '03:30 PM',
-  '04:30 PM'
+  '03:00 PM',
+  '04:00 PM',
+  '05:00 PM'
 ];
+
+/**
+ * Calculates current date in local timezone YYYY-MM-DD format (UTC conversion safe)
+ */
+export const getLocalDateString = (d: Date = new Date()): string => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+/**
+ * Calculates exactly 1 month from current date in local timezone YYYY-MM-DD
+ */
+export const getOneMonthFutureDateString = (d: Date = new Date()): string => {
+  const nextMonth = new Date(d);
+  nextMonth.setMonth(nextMonth.getMonth() + 1);
+  return getLocalDateString(nextMonth);
+};
+
+/**
+ * Parses time string like "10:00 AM" or "02:30 PM" to minutes from midnight
+ */
+export const parseSlotToMinutes = (timeStr: string): number => {
+  const match = (timeStr || '').trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return -1;
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const period = match[3].toUpperCase();
+  if (period === 'PM' && hours < 12) hours += 12;
+  if (period === 'AM' && hours === 12) hours = 0;
+  return hours * 60 + minutes;
+};
+
+/**
+ * Checks if a slot time has already passed for TODAY in local time
+ */
+export const isSlotInPastForToday = (timeStr: string, dateStr: string): boolean => {
+  const todayStr = getLocalDateString();
+  if (dateStr !== todayStr) return false;
+  const now = new Date();
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const slotMinutes = parseSlotToMinutes(timeStr);
+  return slotMinutes >= 0 && slotMinutes <= currentMinutes;
+};
 
 export const PublicBookingModal: React.FC<PublicBookingModalProps> = ({
   isOpen,
   onClose,
   onBookAppointment,
-  existingPatients
+  existingPatients = [],
+  currentUser
 }) => {
   const { showToast } = useToast();
-  const [step, setStep] = useState<number>(1);
-  
-  // Selection states
-  const [selectedService, setSelectedService] = useState(SERVICES[0]);
-  const [selectedDoctor, setSelectedDoctor] = useState(DOCTORS[0]);
-  const [preferredDate, setPreferredDate] = useState('2026-09-24');
-  const [preferredTime, setPreferredTime] = useState('11:30 AM');
-  const [patientName, setPatientName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [notes, setNotes] = useState('');
 
-  // Result state
+  const todayStr = useMemo(() => getLocalDateString(), []);
+  const maxDateStr = useMemo(() => getOneMonthFutureDateString(), []);
+
+  // Form State: Exactly 6 Patient-Facing Fields
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [contact, setContact] = useState('');
+  const [reason, setReason] = useState<string>('Dental Check-up');
+  const [otherReason, setOtherReason] = useState('');
+  const [appointmentDate, setAppointmentDate] = useState<string>(todayStr);
+  const [appointmentTime, setAppointmentTime] = useState<string>('');
+
+  // UI & Network States
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
-  const [generatedToken, setGeneratedToken] = useState('');
+  const [bookedDetails, setBookedDetails] = useState<{
+    token: string;
+    name: string;
+    date: string;
+    time: string;
+    procedure: string;
+  } | null>(null);
+
+  // Live booked appointments for selected date from Supabase
+  const [dateBookedSlots, setDateBookedSlots] = useState<string[]>([]);
+  const [isLoadingSlots, setIsLoadingSlots] = useState(false);
+
+  // Duplicate Booking Prevention State (Email or Phone duplicate)
+  const [isDuplicateBooked, setIsDuplicateBooked] = useState(false);
+  const [duplicateAppointment, setDuplicateAppointment] = useState<any | null>(null);
+
+  // Real-time authoritative check against database for duplicate email/phone
+  useEffect(() => {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanDigits = contact.replace(/\D/g, '').slice(-10);
+
+    if (!cleanEmail && !cleanDigits) {
+      setIsDuplicateBooked(false);
+      setDuplicateAppointment(null);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('appointments')
+          .select('id, patient_name, patient_email, patient_phone, date, time, status');
+
+        if (!error && Array.isArray(data)) {
+          const matched = data.find(a => {
+            const aEmail = (a.patient_email || '').trim().toLowerCase();
+            const aDigits = (a.patient_phone || '').replace(/\D/g, '').slice(-10);
+            const emailMatch = cleanEmail && aEmail && aEmail === cleanEmail;
+            const phoneMatch = cleanDigits && aDigits && aDigits === cleanDigits;
+            return Boolean(emailMatch || phoneMatch);
+          });
+
+          if (matched) {
+            setIsDuplicateBooked(true);
+            setDuplicateAppointment(matched);
+            return;
+          }
+        }
+        setIsDuplicateBooked(false);
+        setDuplicateAppointment(null);
+      } catch (_) {
+        setIsDuplicateBooked(false);
+        setDuplicateAppointment(null);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [email, contact]);
+
+  // Pre-fill user data when opened or currentUser changes
+  useEffect(() => {
+    if (isOpen) {
+      const activeUser = currentUser || StorageService.getCurrentUser();
+      if (activeUser) {
+        if (!name && activeUser.name) setName(activeUser.name);
+        if (!email && activeUser.email) setEmail(activeUser.email);
+        if (!contact && activeUser.phone) setContact(activeUser.phone);
+      }
+      setIsSuccess(false);
+      setErrorMessage(null);
+    }
+  }, [isOpen, currentUser]);
+
+  // Fetch booked slots from Supabase for the selected date
+  const fetchBookedSlotsForDate = useCallback(async (targetDate: string) => {
+    if (!targetDate) return;
+    setIsLoadingSlots(true);
+    try {
+      const { data, error } = await supabase
+        .from('appointments')
+        .select('time, status')
+        .eq('date', targetDate)
+        .neq('status', 'cancelled');
+
+      if (!error && Array.isArray(data)) {
+        const bookedTimes = data
+          .map(a => (a.time || '').trim().toLowerCase())
+          .filter(Boolean);
+        setDateBookedSlots(bookedTimes);
+      } else {
+        // Fallback to local storage appointments
+        const localApts = StorageService.getAppointments();
+        const bookedTimes = localApts
+          .filter(a => a.date === targetDate && a.status !== 'cancelled')
+          .map(a => a.time.trim().toLowerCase());
+        setDateBookedSlots(bookedTimes);
+      }
+    } catch (err) {
+      console.warn('[PublicBookingModal] Failed to fetch booked slots:', err);
+      const localApts = StorageService.getAppointments();
+      const bookedTimes = localApts
+        .filter(a => a.date === targetDate && a.status !== 'cancelled')
+        .map(a => a.time.trim().toLowerCase());
+      setDateBookedSlots(bookedTimes);
+    } finally {
+      setIsLoadingSlots(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen && appointmentDate) {
+      fetchBookedSlotsForDate(appointmentDate);
+    }
+  }, [isOpen, appointmentDate, fetchBookedSlotsForDate]);
+
+  // Reset selected time if date changes and previously selected slot is now booked or passed
+  useEffect(() => {
+    if (appointmentTime) {
+      const isPast = isSlotInPastForToday(appointmentTime, appointmentDate);
+      const isBooked = dateBookedSlots.includes(appointmentTime.trim().toLowerCase());
+      if (isPast || isBooked) {
+        setAppointmentTime('');
+      }
+    }
+  }, [appointmentDate, dateBookedSlots, appointmentTime]);
 
   if (!isOpen) return null;
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const handleDateChange = (val: string) => {
+    setAppointmentDate(val);
+    setErrorMessage(null);
+  };
 
-  const handleNextStep = () => {
-    if (step === 3 && preferredDate < todayStr) {
-      showToast('Validation Error: Please select today or a future date for your appointment.', 'error');
+  const handleSelectSlot = (slot: string, isBooked: boolean, isPast: boolean) => {
+    if (isBooked || isPast) return;
+    setAppointmentTime(slot);
+    setErrorMessage(null);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+
+    // 1. Mandatory Field Validation
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+    const trimmedContact = contact.trim();
+    const finalReason = reason === 'Other' ? otherReason.trim() : reason;
+
+    if (!trimmedName) {
+      setErrorMessage('Please enter your full name.');
       return;
     }
-    if (step === 5) {
-      if (!patientName.trim()) {
-        showToast('Please enter your full name.', 'error');
-        return;
-      }
-      if (!phone.trim() || phone.trim().length < 8) {
-        showToast('Please enter a valid phone number for appointment confirmation.', 'error');
-        return;
-      }
-      handleFinalBooking();
+    if (!trimmedEmail || !trimmedEmail.includes('@') || !trimmedEmail.includes('.')) {
+      setErrorMessage('Please enter a valid email address.');
       return;
     }
-    setStep(prev => Math.min(6, prev + 1));
+    if (!trimmedContact || trimmedContact.replace(/\D/g, '').length < 7) {
+      setErrorMessage('Please enter a valid contact / phone number (at least 7 digits).');
+      return;
+    }
+    if (!finalReason) {
+      setErrorMessage(reason === 'Other' ? 'Please specify your reason for visit.' : 'Please select a reason for visit.');
+      return;
+    }
+    if (!appointmentDate) {
+      setErrorMessage('Please select an appointment date.');
+      return;
+    }
+    if (appointmentDate < todayStr) {
+      setErrorMessage('Appointment date cannot be in the past. Please select today or a future date.');
+      return;
+    }
+    if (appointmentDate > maxDateStr) {
+      setErrorMessage('Appointments can only be scheduled up to 1 month from today.');
+      return;
+    }
+    if (!appointmentTime) {
+      setErrorMessage('Please select an available appointment time slot.');
+      return;
+    }
+    if (isSlotInPastForToday(appointmentTime, appointmentDate)) {
+      setErrorMessage('The selected time slot has already passed for today. Please select a future time slot.');
+      return;
+    }
+    if (isDuplicateBooked) {
+      setErrorMessage(
+        'An appointment already exists for this email address or phone number. Please check your existing appointment instead of booking again.'
+      );
+      return;
+    }
+
+    // Authoritative pre-check against Supabase database for duplicate email/phone
+    try {
+      const { data: dbApts } = await supabase
+        .from('appointments')
+        .select('id, patient_email, patient_phone, date, time, status');
+      if (Array.isArray(dbApts)) {
+        const cleanPhoneDigits = trimmedContact.replace(/\D/g, '').slice(-10);
+        const existingApt = dbApts.find(a => {
+          const aEmail = (a.patient_email || '').trim().toLowerCase();
+          const aDigits = (a.patient_phone || '').replace(/\D/g, '').slice(-10);
+          return Boolean(
+            (trimmedEmail && aEmail && aEmail === trimmedEmail) ||
+            (cleanPhoneDigits.length >= 7 && aDigits && aDigits === cleanPhoneDigits)
+          );
+        });
+        if (existingApt) {
+          setIsDuplicateBooked(true);
+          setDuplicateAppointment(existingApt);
+          setErrorMessage(
+            'An appointment already exists for this email address or phone number. Please check your existing appointment instead of booking again.'
+          );
+          return;
+        }
+      }
+    } catch (_) { }
+
+    setIsSubmitting(true);
+
+    try {
+      const token = `#D-${Math.floor(100 + Math.random() * 900)}`;
+
+      // Resolve existing patient or create/link ID
+      const cleanDigits = trimmedContact.replace(/\D/g, '');
+      const matchedPatient = existingPatients.find(
+        p =>
+          (p.email && p.email.trim().toLowerCase() === trimmedEmail) ||
+          (p.phone && p.phone.replace(/\D/g, '') === cleanDigits) ||
+          p.name.trim().toLowerCase() === trimmedName.toLowerCase()
+      );
+
+      const activeUser = currentUser || StorageService.getCurrentUser();
+      const resolvedPatientId =
+        matchedPatient?.id ||
+        activeUser?.patientId ||
+        `p-${Date.now()}`;
+
+      const newAppointment: Appointment = {
+        id: `apt-${Date.now()}`,
+        patientId: resolvedPatientId,
+        patientName: trimmedName,
+        patientEmail: trimmedEmail,
+        patientPhone: trimmedContact,
+        doctorName: 'Dr. Ananya Sharma',
+        doctorId: 'u-doctor',
+        chair: 'Chair 1 - Endodontics',
+        date: appointmentDate,
+        time: appointmentTime,
+        durationMinutes: 30,
+        procedure: finalReason,
+        status: 'confirmed',
+        tokenNumber: token,
+        notes: `Online Patient Booking. Reason: ${finalReason}. Contact: ${trimmedContact}`
+      };
+
+      // Persist via StorageService (which calls /api/appointments and Supabase)
+      const savedAppointment = await StorageService.addAppointment(newAppointment);
+
+      // Notify parent / UI state
+      if (onBookAppointment) {
+        await onBookAppointment(savedAppointment);
+      }
+
+      setBookedDetails({
+        token,
+        name: trimmedName,
+        date: appointmentDate,
+        time: appointmentTime,
+        procedure: finalReason
+      });
+      setIsSuccess(true);
+      showToast(`Appointment confirmed! Queue Token: ${token}`, 'success');
+    } catch (err: any) {
+      console.error('[PublicBookingModal] Error submitting appointment:', err);
+      const msg = err?.message || '';
+      if (
+        msg.includes('already exists for this email') ||
+        msg.includes('Appointment Already Booked') ||
+        msg.includes('idx_appointments_patient_')
+      ) {
+        setIsDuplicateBooked(true);
+        setErrorMessage(
+          'An appointment already exists for this email address or phone number. Please check your existing appointment instead of booking again.'
+        );
+        showToast(
+          'Appointment Already Booked: An appointment already exists for this email address or phone number.',
+          'error'
+        );
+      } else {
+        const fallbackMsg = msg || 'Failed to book appointment. Please verify details and retry.';
+        setErrorMessage(fallbackMsg);
+        showToast(fallbackMsg, 'error');
+      }
+      // Refresh booked slots in case someone else booked in the meantime
+      fetchBookedSlotsForDate(appointmentDate);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handlePrevStep = () => {
-    setStep(prev => Math.max(1, prev - 1));
-  };
-
-  const handleFinalBooking = () => {
-    const token = `#D-${Math.floor(100 + Math.random() * 900)}`;
-    setGeneratedToken(token);
-
-    const newApt: Appointment = {
-      id: `apt-pub-${Date.now()}`,
-      patientId: 'p-1',
-      patientName: patientName.trim(),
-      doctorName: selectedDoctor.name,
-      doctorId: 'u-doctor',
-      chair: 'Chair 1 - Endodontics',
-      date: preferredDate,
-      time: preferredTime,
-      durationMinutes: selectedService.duration,
-      procedure: selectedService.name,
-      status: 'confirmed',
-      tokenNumber: token,
-      notes: `Online Self-Booking Studio. Phone: ${phone}. Notes: ${notes || 'None'}`
-    };
-
-    onBookAppointment(newApt);
-    setIsSuccess(true);
-    setStep(6);
-    showToast(`Appointment confirmed! Queue Token: ${token}`, 'success');
-  };
-
-  const handleResetAndClose = () => {
-    setStep(1);
+  const handleClose = () => {
     setIsSuccess(false);
+    setErrorMessage(null);
     onClose();
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#252525]/60 backdrop-blur-md">
-      <div className="bg-white/95 backdrop-blur-2xl border border-stone-200/80 rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden text-[#252525] flex flex-col max-h-[90vh]">
-        {/* Top Studio Header */}
-        <div className="bg-[#F7F5F1] p-5 border-b border-stone-200/80 flex items-center justify-between shrink-0">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-stone-900/60 backdrop-blur-md overflow-y-auto">
+      <div className="bg-white/95 backdrop-blur-2xl border border-stone-200/90 rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden text-[#252525] flex flex-col my-auto max-h-[92vh]">
+        {/* Header */}
+        <div className="px-6 py-5 border-b border-stone-200/80 bg-[#F7F5F1]/80 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <span className="w-10 h-10 rounded-2xl bg-[#EDE8DE] border border-[#C8B58D]/30 flex items-center justify-center text-[#252525] shadow-2xs overflow-hidden p-0.5">
-              <ToothIcon size={36} />
+            <span className="w-10 h-10 rounded-2xl bg-[#EDE8DE] text-[#252525] flex items-center justify-center border border-[#C8B58D]/40 shadow-xs">
+              <ToothIcon size={22} />
             </span>
             <div>
-              <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#EDE8DE] text-[10px] font-extrabold uppercase tracking-wider text-[#252525] border border-[#C8B58D]/20 mb-0.5">
-                <Sparkles className="w-3 h-3 text-[#C8B58D]" />
-                <span>Clinical Booking Studio</span>
-              </div>
-              <h2 className="text-base font-extrabold text-[#252525] tracking-tight">
-                Schedule Your Appointment
+              <h2 className="text-lg font-black text-[#252525] tracking-tight font-display">
+                {isSuccess ? 'Booking Confirmed' : 'Book Dental Appointment'}
               </h2>
+              <p className="text-xs text-[#6F6D69] font-medium">
+                {isSuccess
+                  ? 'Your visit has been registered with Dentiflow'
+                  : 'All fields are mandatory. Select an available time slot.'}
+              </p>
             </div>
           </div>
-
           <button
-            onClick={handleResetAndClose}
-            className="w-8 h-8 rounded-xl text-[#6F6D69] hover:text-[#252525] hover:bg-[#EDE8DE] flex items-center justify-center text-sm cursor-pointer transition"
+            type="button"
+            onClick={handleClose}
+            className="w-8 h-8 rounded-full bg-stone-100 hover:bg-stone-200 text-[#6F6D69] hover:text-[#252525] flex items-center justify-center transition cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Step Indicator Bar */}
-        {!isSuccess && (
-          <div className="bg-white px-6 py-3 border-b border-stone-200/80 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2">
-              {[1, 2, 3, 4, 5].map(s => (
-                <div
-                  key={s}
-                  onClick={() => s < step && setStep(s)}
-                  className={`flex items-center justify-center rounded-full text-[11px] font-extrabold transition cursor-pointer ${
-                    step === s
-                      ? 'w-6 h-6 bg-[#252525] text-white shadow-2xs'
-                      : s < step
-                      ? 'w-6 h-6 bg-[#8FA88D]/20 text-[#3B4D3A] border border-[#8FA88D]/30'
-                      : 'w-6 h-6 bg-[#EDE8DE] text-[#6F6D69]'
-                  }`}
-                >
-                  {s < step ? <Check className="w-3.5 h-3.5" /> : s}
-                </div>
-              ))}
-            </div>
-            <span className="text-xs font-bold text-[#6F6D69]">
-              {step === 1 && 'Step 1: Choose Service'}
-              {step === 2 && 'Step 2: Select Clinician'}
-              {step === 3 && 'Step 3: Select Date'}
-              {step === 4 && 'Step 4: Select Available Time'}
-              {step === 5 && 'Step 5: Review & Patient Info'}
-            </span>
-          </div>
-        )}
+        {/* Modal Body */}
+        <div className="p-6 overflow-y-auto space-y-5 flex-1">
+          {isSuccess && bookedDetails ? (
+            /* Success Confirmation Screen */
+            <div className="text-center py-6 space-y-4 animate-in fade-in zoom-in-95 duration-200">
+              <div className="w-16 h-16 rounded-3xl bg-emerald-50 text-emerald-600 border border-emerald-200 mx-auto flex items-center justify-center shadow-xs">
+                <CheckCircle2 className="w-8 h-8" />
+              </div>
 
-        {/* Modal Body / Scrollable Content */}
-        <div className="p-6 overflow-y-auto space-y-4 grow">
-          {/* STEP 1: CHOOSE SERVICE */}
-          {step === 1 && (
-            <div className="space-y-3.5">
               <div>
-                <h3 className="text-sm font-extrabold text-[#252525]">Step 1: Select Dental Service / Treatment</h3>
-                <p className="text-xs text-[#6F6D69]">Choose the primary reason for your clinical appointment.</p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {SERVICES.map(srv => {
-                  const isSelected = selectedService.id === srv.id;
-                  return (
-                    <div
-                      key={srv.id}
-                      onClick={() => setSelectedService(srv)}
-                      className={`p-3.5 rounded-2xl border transition cursor-pointer text-left space-y-1.5 ${
-                        isSelected
-                          ? 'bg-[#EDE8DE]/60 border-[#C8B58D] text-[#252525] shadow-xs'
-                          : 'bg-white/80 border-stone-200/80 text-[#252525] hover:border-[#C8B58D]/60 hover:bg-[#F7F5F1]'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-[#252525]">{srv.name}</span>
-                        {isSelected && (
-                          <span className="w-4 h-4 rounded-full bg-[#252525] text-white flex items-center justify-center text-[10px]">
-                            <Check className="w-2.5 h-2.5" />
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-[#6F6D69] leading-tight">{srv.desc}</p>
-                      <div className="flex items-center justify-between text-[11px] pt-1">
-                        <span className="font-extrabold text-[#594723]">₹{srv.fee.toLocaleString()}</span>
-                        <span className="text-[#999690]">{srv.duration} mins</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* STEP 2: CHOOSE DOCTOR */}
-          {step === 2 && (
-            <div className="space-y-3.5">
-              <div>
-                <h3 className="text-sm font-extrabold text-[#252525]">Step 2: Select Preferred Specialist</h3>
-                <p className="text-xs text-[#6F6D69]">Select your treating dentist or clinician.</p>
-              </div>
-
-              <div className="space-y-2.5">
-                {DOCTORS.map(doc => {
-                  const isSelected = selectedDoctor.id === doc.id;
-                  return (
-                    <div
-                      key={doc.id}
-                      onClick={() => setSelectedDoctor(doc)}
-                      className={`p-3.5 rounded-2xl border transition cursor-pointer flex items-center justify-between ${
-                        isSelected
-                          ? 'bg-[#EDE8DE]/60 border-[#C8B58D] text-[#252525] shadow-xs'
-                          : 'bg-white/80 border-stone-200/80 text-[#252525] hover:border-[#C8B58D]/60 hover:bg-[#F7F5F1]'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-2xl bg-[#EDE8DE] border border-[#C8B58D]/30 flex items-center justify-center text-[#252525] font-bold text-sm shrink-0">
-                          <Stethoscope className="w-5 h-5 text-[#C8B58D]" />
-                        </div>
-                        <div>
-                          <h4 className="text-xs font-bold text-[#252525]">{doc.name}</h4>
-                          <p className="text-[11px] text-[#6F6D69]">{doc.specialty}</p>
-                          <span className="text-[10px] font-semibold text-[#999690]">{doc.qualification} &bull; {doc.exp}</span>
-                        </div>
-                      </div>
-
-                      {isSelected ? (
-                        <span className="w-5 h-5 rounded-full bg-[#252525] text-white flex items-center justify-center">
-                          <Check className="w-3 h-3" />
-                        </span>
-                      ) : (
-                        <span className="text-xs font-bold text-[#C8B58D]">Select</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* STEP 3: CHOOSE DATE */}
-          {step === 3 && (
-            <div className="space-y-3.5">
-              <div>
-                <h3 className="text-sm font-extrabold text-[#252525]">Step 3: Choose Appointment Date</h3>
-                <p className="text-xs text-[#6F6D69]">Select your preferred calendar date for the clinical visit.</p>
-              </div>
-
-              <div className="p-4 bg-white/80 rounded-2xl border border-stone-200/80 space-y-3">
-                <label className="block text-xs font-bold text-[#252525]">
-                  Select Date *
-                </label>
-                <div className="flex items-center gap-2">
-                  <Calendar className="w-4 h-4 text-[#C8B58D]" />
-                  <input
-                    type="date"
-                    min={todayStr}
-                    value={preferredDate}
-                    onChange={e => setPreferredDate(e.target.value)}
-                    required
-                    className="w-full px-3 py-2 text-xs border border-stone-200/80 rounded-xl bg-white text-[#252525] focus:outline-none focus:border-[#C8B58D] focus:ring-2 focus:ring-[#C8B58D]/20 font-bold"
-                  />
-                </div>
-                <p className="text-[11px] text-[#6F6D69]">
-                  Same-day emergency consultation slots are open based on operatory availability.
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 4: CHOOSE TIME */}
-          {step === 4 && (
-            <div className="space-y-3.5">
-              <div>
-                <h3 className="text-sm font-extrabold text-[#252525]">Step 4: Select Available Time Slot</h3>
-                <p className="text-xs text-[#6F6D69]">Choose an operatory time slot for {preferredDate}.</p>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-                {TIME_SLOTS.map(t => {
-                  const isSelected = preferredTime === t;
-                  return (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => setPreferredTime(t)}
-                      className={`p-3 text-xs font-bold rounded-xl border transition cursor-pointer flex items-center justify-center gap-1.5 ${
-                        isSelected
-                          ? 'bg-[#252525] border-[#252525] text-white shadow-xs'
-                          : 'bg-white border-stone-200 text-[#252525] hover:bg-[#F7F5F1] hover:border-[#C8B58D]'
-                      }`}
-                    >
-                      <Clock className={`w-3.5 h-3.5 ${isSelected ? 'text-[#C8B58D]' : 'text-[#6F6D69]'}`} />
-                      <span>{t}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* STEP 5: REVIEW & PATIENT DETAILS */}
-          {step === 5 && (
-            <div className="space-y-4">
-              <div>
-                <h3 className="text-sm font-extrabold text-[#252525]">Step 5: Patient Details &amp; Summary</h3>
-                <p className="text-xs text-[#6F6D69]">Review appointment information and provide contact details.</p>
-              </div>
-
-              {/* Summary Card */}
-              <div className="p-4 bg-[#EDE8DE]/40 rounded-2xl border border-stone-200/80 space-y-2 text-xs">
-                <div className="flex justify-between pb-1.5 border-b border-stone-200/80 font-extrabold text-[#C8B58D] text-[11px] uppercase tracking-wider">
-                  <span>Appointment Summary</span>
-                  <span>Oralix Studio</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#6F6D69]">Service:</span>
-                  <span className="font-bold text-[#252525]">{selectedService.name}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#6F6D69]">Clinician:</span>
-                  <span className="font-bold text-[#252525]">{selectedDoctor.name}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#6F6D69]">Date &amp; Time:</span>
-                  <span className="font-bold text-[#252525]">{preferredDate} at {preferredTime}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#6F6D69]">Estimated Fee:</span>
-                  <span className="font-extrabold text-[#594723]">₹{selectedService.fee.toLocaleString()}</span>
-                </div>
-              </div>
-
-              {/* Form Inputs */}
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-bold text-[#252525] mb-1">
-                    Your Full Name *
-                  </label>
-                  <input
-                    type="text"
-                    value={patientName}
-                    onChange={e => setPatientName(e.target.value)}
-                    placeholder="e.g. Ramesh Kumar"
-                    required
-                    className="w-full px-3 py-2 text-xs border border-stone-200/80 rounded-xl bg-white text-[#252525] focus:outline-none focus:border-[#C8B58D] focus:ring-2 focus:ring-[#C8B58D]/20 transition"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[#252525] mb-1">
-                    Phone Number (for SMS &amp; Token updates) *
-                  </label>
-                  <input
-                    type="tel"
-                    value={phone}
-                    onChange={e => setPhone(e.target.value)}
-                    placeholder="+91 98765 43210"
-                    required
-                    className="w-full px-3 py-2 text-xs border border-stone-200/80 rounded-xl bg-white text-[#252525] focus:outline-none focus:border-[#C8B58D] focus:ring-2 focus:ring-[#C8B58D]/20 transition"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-[#252525] mb-1">
-                    Additional Symptoms / Treatment Notes
-                  </label>
-                  <textarea
-                    rows={2}
-                    value={notes}
-                    onChange={e => setNotes(e.target.value)}
-                    placeholder="e.g. Tooth sensitivity or mild ache in lower right molar..."
-                    className="w-full p-2.5 text-xs border border-stone-200/80 rounded-xl bg-white text-[#252525] focus:outline-none focus:border-[#C8B58D] focus:ring-2 focus:ring-[#C8B58D]/20 transition"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 6: CONFIRMATION SUCCESS STATE */}
-          {step === 6 && isSuccess && (
-            <div className="text-center py-4 space-y-4">
-              <div className="w-14 h-14 bg-[#8FA88D]/20 border border-[#8FA88D]/40 text-[#3B4D3A] rounded-2xl mx-auto flex items-center justify-center shadow-xs">
-                <CheckCircle2 className="w-8 h-8 text-[#8FA88D]" />
-              </div>
-              <div>
-                <h3 className="text-lg font-extrabold text-[#252525]">Your Appointment is Confirmed!</h3>
-                <p className="text-xs text-[#6F6D69] mt-1">
-                  We look forward to seeing you, <span className="font-bold text-[#252525]">{patientName}</span>.
+                <span className="inline-block px-3 py-1 rounded-full bg-[#EDE8DE] text-[#252525] text-xs font-black tracking-wider border border-[#C8B58D]/50 mb-2">
+                  QUEUE TOKEN {bookedDetails.token}
+                </span>
+                <h3 className="text-xl font-extrabold text-[#252525]">
+                  Appointment Successfully Scheduled!
+                </h3>
+                <p className="text-xs text-[#6F6D69] max-w-sm mx-auto mt-1">
+                  Thank you, <strong className="text-[#252525]">{bookedDetails.name}</strong>. Your appointment has been recorded in Supabase and is immediately visible to the clinic doctors.
                 </p>
               </div>
 
-              <div className="p-4 bg-[#EDE8DE]/40 rounded-2xl border border-stone-200/80 text-xs space-y-2 text-left max-w-sm mx-auto">
-                <div className="flex justify-between pb-1.5 border-b border-stone-200/80 font-bold text-[#C8B58D] text-[11px] uppercase tracking-wider">
-                  <span>Queue Token Number</span>
-                  <span className="font-mono text-[#252525] text-xs font-black">{generatedToken}</span>
+              <div className="bg-[#F7F5F1] border border-stone-200/80 rounded-2xl p-4 text-left space-y-2 text-xs">
+                <div className="flex items-center justify-between pb-2 border-b border-stone-200">
+                  <span className="text-[#6F6D69] font-medium">Scheduled Date:</span>
+                  <span className="font-bold text-[#252525] flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5 text-[#C8B58D]" />
+                    {bookedDetails.date}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-[#6F6D69]">Date &amp; Time:</span>
-                  <span className="font-bold text-[#252525]">{preferredDate} at {preferredTime}</span>
+                <div className="flex items-center justify-between pb-2 border-b border-stone-200">
+                  <span className="text-[#6F6D69] font-medium">Reserved Time Slot:</span>
+                  <span className="font-bold text-[#252525] flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-[#C8B58D]" />
+                    {bookedDetails.time}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-[#6F6D69]">Clinician:</span>
-                  <span className="font-bold text-[#252525]">{selectedDoctor.name}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#6F6D69]">Procedure:</span>
-                  <span className="font-bold text-[#252525]">{selectedService.name}</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-[#6F6D69] font-medium">Reason for Visit:</span>
+                  <span className="font-bold text-[#252525] text-right truncate max-w-[200px]">
+                    {bookedDetails.procedure}
+                  </span>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* Modal Footer Controls */}
-        <div className="bg-[#F7F5F1] p-4 border-t border-stone-200/80 flex items-center justify-between shrink-0">
-          {!isSuccess ? (
-            <>
-              {step > 1 ? (
-                <button
-                  type="button"
-                  onClick={handlePrevStep}
-                  className="btn-secondary text-xs cursor-pointer flex items-center gap-1.5"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>Back</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleResetAndClose}
-                  className="btn-secondary text-xs cursor-pointer"
-                >
-                  Cancel
-                </button>
-              )}
 
               <button
                 type="button"
-                onClick={handleNextStep}
-                className="btn-primary text-xs cursor-pointer flex items-center gap-1.5"
+                onClick={handleClose}
+                className="w-full py-2.5 px-4 rounded-xl font-bold text-xs bg-[#252525] text-[#F7F5F1] hover:bg-stone-800 transition cursor-pointer shadow-xs"
               >
-                <span>{step === 5 ? 'Confirm Appointment' : 'Next Step'}</span>
-                <ChevronRight className="w-4 h-4 text-[#C8B58D]" />
+                Close &amp; View in Dashboard
               </button>
-            </>
+            </div>
           ) : (
-            <button
-              type="button"
-              onClick={handleResetAndClose}
-              className="btn-primary w-full text-xs cursor-pointer py-2.5"
-            >
-              Done &amp; Return to Dashboard
-            </button>
+            /* Exactly 6 Mandatory Patient-Facing Fields Form */
+            <form onSubmit={handleSubmit} className="space-y-4">
+              {isDuplicateBooked && (
+                <div className="p-4 rounded-2xl bg-amber-50/90 border-2 border-amber-300 text-amber-950 text-xs shadow-xs animate-in fade-in duration-200 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                    <span className="font-extrabold text-sm text-amber-900">Appointment Already Booked</span>
+                  </div>
+                  <p className="text-amber-800 leading-relaxed pl-7">
+                    An appointment already exists for this email address or phone number. Please check your existing appointment instead of booking again.
+                  </p>
+                  {duplicateAppointment && (
+                    <div className="mt-2 pl-7 pt-2 border-t border-amber-200/80 text-[11px] text-amber-900 flex flex-wrap items-center gap-2">
+                      <span className="font-bold">Existing Booking:</span>
+                      <span className="px-2 py-0.5 rounded-md bg-amber-100/90 font-mono font-bold">
+                        {duplicateAppointment.date} at {duplicateAppointment.time}
+                      </span>
+                      <span className="capitalize font-semibold text-amber-800">
+                        &bull; Status: {duplicateAppointment.status}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {errorMessage && !isDuplicateBooked && (
+                <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-center gap-2 animate-in fade-in duration-150">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+                  <span>{errorMessage}</span>
+                </div>
+              )}
+
+              {/* 1. Name */}
+              <div>
+                <label className="block text-xs font-bold text-[#252525] mb-1.5 flex items-center gap-1">
+                  <UserIcon className="w-3.5 h-3.5 text-[#C8B58D]" />
+                  <span>1. Full Name *</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  placeholder="e.g. Rahul Sharma"
+                  className="w-full px-3.5 py-2.5 text-xs bg-white border border-stone-200 rounded-xl text-[#252525] focus:outline-none focus:ring-2 focus:ring-[#C8B58D] transition"
+                />
+              </div>
+
+              {/* 2. Email & 3. Contact in responsive grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* 2. Email */}
+                <div>
+                  <label className="block text-xs font-bold text-[#252525] mb-1.5 flex items-center gap-1">
+                    <Mail className="w-3.5 h-3.5 text-[#C8B58D]" />
+                    <span>2. Email Address *</span>
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    placeholder="patient@example.com"
+                    className="w-full px-3.5 py-2.5 text-xs bg-white border border-stone-200 rounded-xl text-[#252525] focus:outline-none focus:ring-2 focus:ring-[#C8B58D] transition"
+                  />
+                </div>
+
+                {/* 3. Contact */}
+                <div>
+                  <label className="block text-xs font-bold text-[#252525] mb-1.5 flex items-center gap-1">
+                    <Phone className="w-3.5 h-3.5 text-[#C8B58D]" />
+                    <span>3. Contact Number *</span>
+                  </label>
+                  <input
+                    type="tel"
+                    required
+                    value={contact}
+                    onChange={e => setContact(e.target.value)}
+                    placeholder="+91 98765 43210"
+                    className="w-full px-3.5 py-2.5 text-xs bg-white border border-stone-200 rounded-xl text-[#252525] focus:outline-none focus:ring-2 focus:ring-[#C8B58D] transition"
+                  />
+                </div>
+              </div>
+
+              {/* 4. Reason for Visit (Dropdown + Specify if Other) */}
+              <div>
+                <label className="block text-xs font-bold text-[#252525] mb-1.5 flex items-center gap-1">
+                  <Stethoscope className="w-3.5 h-3.5 text-[#C8B58D]" />
+                  <span>4. Reason for Visit *</span>
+                </label>
+                <select
+                  required
+                  value={reason}
+                  onChange={e => {
+                    setReason(e.target.value);
+                    if (e.target.value !== 'Other') setOtherReason('');
+                  }}
+                  className="w-full px-3.5 py-2.5 text-xs bg-white border border-stone-200 rounded-xl text-[#252525] focus:outline-none focus:ring-2 focus:ring-[#C8B58D] transition cursor-pointer"
+                >
+                  {REASONS_FOR_VISIT.map(opt => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+
+                {reason === 'Other' && (
+                  <div className="mt-2 animate-in fade-in duration-150">
+                    <input
+                      type="text"
+                      required
+                      value={otherReason}
+                      onChange={e => setOtherReason(e.target.value)}
+                      placeholder="Please specify reason for visit *"
+                      className="w-full px-3.5 py-2 text-xs bg-stone-50 border border-stone-200 rounded-xl text-[#252525] focus:outline-none focus:ring-2 focus:ring-[#C8B58D] transition"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 5. Appointment Date (Window: Today to +1 Month) */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-[#252525] flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5 text-[#C8B58D]" />
+                    <span>5. Appointment Date *</span>
+                  </label>
+                  <span className="text-[10px] text-[#6F6D69] font-medium">
+                    Allowed: Today through {maxDateStr}
+                  </span>
+                </div>
+                <input
+                  type="date"
+                  required
+                  min={todayStr}
+                  max={maxDateStr}
+                  value={appointmentDate}
+                  onChange={e => handleDateChange(e.target.value)}
+                  className="w-full px-3.5 py-2.5 text-xs bg-white border border-stone-200 rounded-xl text-[#252525] focus:outline-none focus:ring-2 focus:ring-[#C8B58D] transition cursor-pointer font-medium"
+                />
+              </div>
+
+              {/* 6. Appointment Time Slots (Blocks Past & Already Booked Slots) */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-[#252525] flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-[#C8B58D]" />
+                    <span>6. Appointment Time Slot *</span>
+                  </label>
+                  {isLoadingSlots && (
+                    <span className="text-[10px] text-[#C8B58D] flex items-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Checking availability...
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {CLINIC_TIME_SLOTS.map(slot => {
+                    const normSlot = slot.trim().toLowerCase();
+                    const isBooked = dateBookedSlots.includes(normSlot);
+                    const isPast = isSlotInPastForToday(slot, appointmentDate);
+                    const isSelected = appointmentTime === slot;
+
+                    if (isBooked) {
+                      return (
+                        <div
+                          key={slot}
+                          className="px-3 py-2.5 rounded-xl border border-rose-200/80 bg-rose-50/70 text-rose-800 text-xs flex flex-col items-center justify-center opacity-70 cursor-not-allowed select-none shadow-2xs"
+                          title="This slot has already been booked."
+                        >
+                          <span className="font-bold line-through">{slot}</span>
+                          <span className="text-[9px] font-black uppercase text-rose-700 tracking-wider flex items-center gap-0.5 mt-0.5">
+                            <Ban className="w-2.5 h-2.5" />
+                            BOOKED
+                          </span>
+                        </div>
+                      );
+                    }
+
+                    if (isPast) {
+                      return (
+                        <div
+                          key={slot}
+                          className="px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-100/70 text-stone-400 text-xs flex flex-col items-center justify-center opacity-60 cursor-not-allowed select-none"
+                          title="This time slot has already passed for today."
+                        >
+                          <span className="font-semibold line-through">{slot}</span>
+                          <span className="text-[9px] font-bold uppercase tracking-wider mt-0.5">
+                            Passed
+                          </span>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <button
+                        key={slot}
+                        type="button"
+                        onClick={() => handleSelectSlot(slot, false, false)}
+                        className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer shadow-2xs ${isSelected
+                            ? 'bg-[#252525] border-[#252525] text-[#F7F5F1] ring-2 ring-[#C8B58D]'
+                            : 'bg-white border-stone-200 text-[#252525] hover:border-[#C8B58D] hover:bg-[#F7F5F1]'
+                          }`}
+                      >
+                        <span className="flex items-center gap-1">
+                          {isSelected && <Check className="w-3 h-3 text-[#C8B58D]" />}
+                          <span>{slot}</span>
+                        </span>
+                        <span className={`text-[9px] font-semibold mt-0.5 ${isSelected ? 'text-[#C8B58D]' : 'text-emerald-600'}`}>
+                          Available
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Submit Buttons */}
+              <div className="pt-3 border-t border-stone-200/80 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  disabled={isSubmitting}
+                  className="px-4 py-2 text-xs font-bold text-[#6F6D69] hover:bg-stone-100 rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting || isDuplicateBooked}
+                  className="px-5 py-2.5 text-xs font-bold bg-[#252525] hover:bg-stone-800 text-[#F7F5F1] rounded-xl transition shadow-xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isDuplicateBooked ? (
+                    <>
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Appointment Already Booked</span>
+                    </>
+                  ) : isSubmitting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-[#C8B58D]" />
+                      <span>Confirming Slot...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5 text-[#C8B58D]" />
+                      <span>Book Appointment</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           )}
         </div>
       </div>

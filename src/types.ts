@@ -88,6 +88,8 @@ export interface Appointment {
   status: AppointmentStatus;
   notes?: string;
   tokenNumber?: string;
+  patientEmail?: string;
+  patientPhone?: string;
 }
 
 export type QueueStatus = 'waiting' | 'in_chair' | 'billing' | 'completed';
@@ -209,6 +211,8 @@ export interface Invoice {
   patientCode?: string;
   patientAge?: number;
   patientGender?: 'Male' | 'Female' | 'Other';
+  patientEmail?: string;
+  patientPhone?: string;
   date: string;
   dueDate: string;
   items?: InvoiceItem[];
@@ -230,7 +234,15 @@ export interface Invoice {
   amountPaid: number;
   balanceDue: number;
   status: InvoiceStatus;
-  paymentMethod?: 'QR Payment' | 'UPI' | 'Debit Card' | 'Credit Card' | 'Cash' | 'Insurance' | 'Card / POS' | 'upi' | 'card' | 'cash' | 'insurance';
+  paymentMethod?: 'Razorpay' | 'QR Payment' | 'UPI' | 'Debit Card' | 'Credit Card' | 'Cash' | 'Insurance' | 'Card / POS' | 'upi' | 'card' | 'cash' | 'insurance';
+  paymentStatus?: 'created' | 'pending' | 'verified' | 'failed' | 'refunded';
+  razorpayPaymentId?: string;
+  razorpayOrderId?: string;
+  paymentVerifiedAt?: string;
+  receiptEmailStatus?: 'pending' | 'sent' | 'failed' | 'skipped';
+  receiptEmailSentAt?: string;
+  receiptEmailError?: string;
+  receiptPdfGeneratedAt?: string;
   sentToReceptionist?: boolean;
   isDraft?: boolean;
 }
@@ -281,7 +293,7 @@ export interface PaymentTransaction {
   patientId: string;
   patientName: string;
   amount: number;
-  paymentMethod: 'QR Payment' | 'UPI' | 'Debit Card' | 'Credit Card' | 'Cash' | 'Insurance' | 'Card / POS' | 'UPI / QR' | 'Net Banking' | 'Wallet';
+  paymentMethod: 'Razorpay' | 'QR Payment' | 'UPI' | 'Debit Card' | 'Credit Card' | 'Cash' | 'Insurance' | 'Card / POS' | 'UPI / QR' | 'Net Banking' | 'Wallet';
   transactionRef: string; // UTR / POS Terminal Ref / Cash Voucher # / Insurance Pre-Auth #
   status: PaymentState;
   timestamp: string;

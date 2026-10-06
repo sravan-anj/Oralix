@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Invoice, Patient } from '../../types';
-import { X, Printer, Download, User, Calendar, FileText, CheckCircle2, Clock, AlertCircle } from 'lucide-react';
+import { X, Printer, Download, User, Calendar, FileText, CheckCircle2, Clock, AlertCircle, Mail, Send } from 'lucide-react';
 import { downloadTaxInvoicePdfBlob } from '../../utils/pdfGenerator';
+import { paymentService } from '../../utils/paymentService';
 
 interface InvoiceDetailsModalProps {
   invoice: Invoice;
@@ -26,6 +27,27 @@ export const InvoiceDetailsModal: React.FC<InvoiceDetailsModalProps> = ({
     email: `${invoice.patientName.toLowerCase().replace(/\s+/g, '.')}@example.com`,
     balanceDue: invoice.balanceDue,
     medicalAlerts: []
+  };
+
+  const isPaid = invoice.status === 'paid' || invoice.paymentStatus === 'verified' || invoice.balanceDue <= 0;
+  const [isResendingEmail, setIsResendingEmail] = useState(false);
+  const [emailFeedback, setEmailFeedback] = useState<string | null>(null);
+
+  const handleResendReceipt = async () => {
+    setIsResendingEmail(true);
+    setEmailFeedback(null);
+    try {
+      const res = await paymentService.retryReceiptEmailApi(invoice.id);
+      if (res.success) {
+        setEmailFeedback(`Receipt sent to ${res.receipt_email || effectivePatient.email}!`);
+      } else {
+        setEmailFeedback(`Failed: ${res.error || 'Server error'}`);
+      }
+    } catch (err: any) {
+      setEmailFeedback(`Failed: ${err.message}`);
+    } finally {
+      setIsResendingEmail(false);
+    }
   };
 
   const handlePrint = () => {
@@ -118,6 +140,66 @@ export const InvoiceDetailsModal: React.FC<InvoiceDetailsModalProps> = ({
               </p>
             </div>
           </div>
+
+          {/* Linked Clinical Appointment Info */}
+          {invoice.appointmentId && (
+            <div className="p-3 bg-[#FAF8F5] border border-[#E5E0D8] rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-2xs">
+              <div>
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#6F6D69] block">
+                  Authoritative Linked Appointment
+                </span>
+                <p className="text-xs font-bold text-[#252525] mt-0.5">
+                  Appt ID: <span className="font-mono text-[#252525]">{invoice.appointmentId}</span>
+                  {invoice.chiefComplaint && <span> &bull; Complaint: {invoice.chiefComplaint}</span>}
+                </p>
+              </div>
+              <div className="text-left sm:text-right text-[11px] text-[#6F6D69]">
+                {invoice.appointmentDate && <span>Date: <strong className="text-[#252525]">{invoice.appointmentDate}</strong></span>}
+                {invoice.appointmentTime && <span> &bull; Time: <strong className="text-[#252525]">{invoice.appointmentTime}</strong></span>}
+              </div>
+            </div>
+          )}
+
+          {/* Receipt Email & Payment Status Banner (if paid) */}
+          {isPaid && (
+            <div className="p-3 bg-emerald-50/70 border border-emerald-200/80 rounded-xl space-y-1.5 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <div>
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800">
+                      Payment Verified · {invoice.paymentMethod || 'Razorpay Online'}
+                    </span>
+                    <p className="text-[11px] text-emerald-950 font-medium">
+                      Receipt PDF: {invoice.receiptEmailStatus === 'sent'
+                        ? `Emailed to ${effectivePatient.email || 'patient'}`
+                        : invoice.receiptEmailStatus === 'skipped'
+                        ? 'Skipped (patient email unavailable)'
+                        : invoice.receiptEmailStatus === 'failed'
+                        ? `Delivery failed: ${invoice.receiptEmailError || 'Network error'}`
+                        : 'Official PDF generated & ready'}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={isResendingEmail}
+                  onClick={handleResendReceipt}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-900 bg-white hover:bg-emerald-100 border border-emerald-300 rounded-lg transition shadow-2xs cursor-pointer disabled:opacity-50"
+                >
+                  <Mail className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>{isResendingEmail ? 'Sending...' : 'Resend Receipt'}</span>
+                </button>
+              </div>
+
+              {emailFeedback && (
+                <div className="pt-1 text-[11px] font-bold text-center text-emerald-800 border-t border-emerald-200/60">
+                  {emailFeedback}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Itemized Procedures Table */}
           <div className="bg-white rounded-xl border border-[#E5E0D8] overflow-hidden shadow-2xs">

@@ -1,5 +1,4 @@
-import React, { useState, useMemo } from 'react';
-import { ToothIcon } from '../common/ToothIcon';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Invoice, Patient } from '../../types';
 import {
   Building,
@@ -18,12 +17,16 @@ import {
   Filter,
   Receipt,
   User,
-  ShieldCheck
+  ShieldCheck,
+  RefreshCw
 } from 'lucide-react';
 import { downloadTaxInvoicePdfBlob } from '../../utils/pdfGenerator';
 import { InvoiceDetailsModal } from './InvoiceDetailsModal';
 import { ReceptionistPaymentModal } from './ReceptionistPaymentModal';
 import { useToast } from '../common/Toast';
+import { ToothIcon } from '../common/ToothIcon';
+import { supabase } from '../../utils/supabaseClient';
+import { mapRowToInvoice } from '../../utils/storage';
 
 interface ReceptionistDashboardProps {
   invoices: Invoice[];
@@ -47,6 +50,58 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
   const [statusFilter, setStatusFilter] = useState<'all' | 'paid' | 'outstanding'>('all');
   const [selectedInvoiceForDetails, setSelectedInvoiceForDetails] = useState<Invoice | null>(null);
   const [selectedInvoiceForPayment, setSelectedInvoiceForPayment] = useState<Invoice | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Authoritative fetch directly from Supabase invoices table
+  const fetchAuthoritativeInvoices = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      const { data, error } = await supabase
+        .from('invoices')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        const canonicalBills = data.map(mapRowToInvoice);
+        onSaveInvoices(canonicalBills);
+      }
+    } catch (err) {
+      console.error('[Receptionist] Failed to fetch invoices from Supabase:', err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [onSaveInvoices]);
+
+  // Initial mount fetch and Supabase Realtime channel subscription
+  useEffect(() => {
+    let isMounted = true;
+    fetchAuthoritativeInvoices();
+
+    const receptionistChannel = supabase
+      .channel('receptionist-invoices-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'invoices'
+        },
+        (payload: any) => {
+          if (!isMounted) return;
+          console.log('[Receptionist Realtime] postgres_changes:', payload.eventType, payload);
+          // Re-fetch authoritative ordered list immediately
+          fetchAuthoritativeInvoices();
+        }
+      )
+      .subscribe((status: string) => {
+        console.log('[Receptionist Realtime] Invoices channel status:', status);
+      });
+
+    return () => {
+      isMounted = false;
+      supabase.removeChannel(receptionistChannel);
+    };
+  }, [fetchAuthoritativeInvoices]);
 
   // Financial KPIs
   const kpis = useMemo(() => {
@@ -159,6 +214,17 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
           <div className="flex items-center gap-2.5">
             <button
               type="button"
+              onClick={fetchAuthoritativeInvoices}
+              disabled={isRefreshing}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#252525] bg-[#EDE8DE] hover:bg-[#C8B58D] rounded-xl border border-[#C8B58D]/40 transition cursor-pointer disabled:opacity-50"
+              title="Fetch latest bills directly from Supabase"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-[#252525] ${isRefreshing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{isRefreshing ? 'Syncing...' : 'Refresh Ledger'}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={onNavigateHome}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-stone-600 hover:text-stone-900 bg-stone-100 hover:bg-[#EDE8DE] rounded-xl border border-stone-200 transition cursor-pointer"
               title="Return to Main Doctor / Admin Workstation"
@@ -266,22 +332,20 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
               <button
                 type="button"
                 onClick={() => setStatusFilter('all')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer ${
-                  statusFilter === 'all'
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer ${statusFilter === 'all'
                     ? 'bg-white text-[#1E1E1E] shadow-2xs font-bold'
                     : 'text-stone-600 hover:text-stone-900'
-                }`}
+                  }`}
               >
                 All Bills ({invoices.length})
               </button>
               <button
                 type="button"
                 onClick={() => setStatusFilter('outstanding')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                  statusFilter === 'outstanding'
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${statusFilter === 'outstanding'
                     ? 'bg-white text-amber-800 shadow-2xs font-bold'
                     : 'text-stone-600 hover:text-amber-800'
-                }`}
+                  }`}
               >
                 <Clock className="w-3 h-3 text-amber-600" />
                 <span>Outstanding</span>
@@ -289,11 +353,10 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
               <button
                 type="button"
                 onClick={() => setStatusFilter('paid')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                  statusFilter === 'paid'
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${statusFilter === 'paid'
                     ? 'bg-white text-emerald-800 shadow-2xs font-bold'
                     : 'text-stone-600 hover:text-emerald-800'
-                }`}
+                  }`}
               >
                 <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                 <span>Paid</span>
@@ -354,10 +417,20 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
                       <tr key={inv.id} className="hover:bg-[#FAF8F5]/80 transition-colors">
                         {/* 1. Invoice # */}
                         <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-1.5">
-                            <span className="font-mono font-bold text-[#1E1E1E] text-xs">
-                              {inv.invoiceNumber}
-                            </span>
+                          <div className="flex flex-col gap-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono font-bold text-[#1E1E1E] text-xs">
+                                {inv.invoiceNumber}
+                              </span>
+                              {inv.appointmentId && (
+                                <span
+                                  className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-[#EDE8DE] text-[#252525] border border-[#C8B58D]/30"
+                                  title={`Linked to Appointment: ${inv.appointmentId}`}
+                                >
+                                  Appt #{inv.appointmentId.slice(-6)}
+                                </span>
+                              )}
+                            </div>
                             {inv.date && (
                               <span className="text-[10px] text-stone-400 block font-normal">
                                 {inv.date}
@@ -410,13 +483,12 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
                         {/* 7. Status */}
                         <td className="py-3.5 px-4 text-center">
                           <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide inline-block ${
-                              isPaid
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide inline-block ${isPaid
                                 ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                                 : inv.status === 'partial'
-                                ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                                : 'bg-rose-100 text-rose-800 border border-rose-200'
-                            }`}
+                                  ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                                  : 'bg-rose-100 text-rose-800 border border-rose-200'
+                              }`}
                           >
                             {isPaid ? 'PAID' : inv.status.replace('_', ' ').toUpperCase()}
                           </span>
