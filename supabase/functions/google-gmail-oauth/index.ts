@@ -173,15 +173,15 @@ function renderPage(params: {
     params.statusBadge === "success"
       ? "#059669"
       : params.statusBadge === "error"
-      ? "#dc2626"
-      : "#d97706";
+        ? "#dc2626"
+        : "#d97706";
 
   const badgeText =
     params.statusBadge === "success"
       ? "Authorization Successful"
       : params.statusBadge === "error"
-      ? "Authorization Error"
-      : "Configuration Notice";
+        ? "Authorization Error"
+        : "Configuration Notice";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -320,15 +320,11 @@ Deno.serve(async (req: Request) => {
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
-  // Read Google OAuth credentials from server environment secrets or server configuration
-  const SERVER_DEFAULT_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID";
-  const SERVER_DEFAULT_CLIENT_SECRET = "YOUR_GOOGLE_CLIENT_SECRET";
-
-  const clientId = (Deno.env.get("GOOGLE_CLIENT_ID") || SERVER_DEFAULT_CLIENT_ID)?.trim();
-  const clientSecret = (Deno.env.get("GOOGLE_CLIENT_SECRET") || SERVER_DEFAULT_CLIENT_SECRET)?.trim();
+  const clientId = Deno.env.get("GOOGLE_CLIENT_ID")?.trim();
+  const clientSecret = Deno.env.get("GOOGLE_CLIENT_SECRET")?.trim();
 
   // Signing secret for state HMAC validation
-  const signingSecret = clientSecret || supabaseServiceKey || "dentiflow_secure_oauth_state_secret";
+  const signingSecret = clientSecret;
 
   // Support status query via Edge Function
   if (url.searchParams.get("action") === "status") {

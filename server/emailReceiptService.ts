@@ -306,8 +306,8 @@ export async function sendAuthoritativeReceiptEmail(
         const rows = await connRes.json();
         const conn = rows?.[0];
         if (conn?.refresh_token) {
-          const clientId = (process.env.GOOGLE_CLIENT_ID || 'YOUR_GOOGLE_CLIENT_ID').trim();
-          const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || 'YOUR_GOOGLE_CLIENT_SECRET').trim();
+          const clientId = process.env.GOOGLE_CLIENT_ID.trim();
+          const clientSecret = process.env.GOOGLE_CLIENT_SECRET.trim();
 
           const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
             method: 'POST',

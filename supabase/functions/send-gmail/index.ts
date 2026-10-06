@@ -436,11 +436,9 @@ Deno.serve(async (req: Request) => {
     }
 
     // 6. Verify Google OAuth Secrets configuration & obtain refresh token
-    const SERVER_DEFAULT_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID";
-    const SERVER_DEFAULT_CLIENT_SECRET = "YOUR_GOOGLE_CLIENT_SECRET";
 
-    const googleClientId = (Deno.env.get("GOOGLE_CLIENT_ID") || SERVER_DEFAULT_CLIENT_ID)?.trim();
-    const googleClientSecret = (Deno.env.get("GOOGLE_CLIENT_SECRET") || SERVER_DEFAULT_CLIENT_SECRET)?.trim();
+    const googleClientId = Deno.env.get("GOOGLE_CLIENT_ID")?.trim();
+    const googleClientSecret = Deno.env.get("GOOGLE_CLIENT_SECRET")?.trim();
     const envRefreshToken = Deno.env.get("GOOGLE_REFRESH_TOKEN")?.trim();
 
     let activeRefreshToken = envRefreshToken;
