@@ -346,7 +346,7 @@ export const PublicBookingModal: React.FC<PublicBookingModalProps> = ({
           return;
         }
       }
-    } catch (_) {}
+    } catch (_) { }
 
     setIsSubmitting(true);
 
@@ -718,11 +718,10 @@ export const PublicBookingModal: React.FC<PublicBookingModalProps> = ({
                         key={slot}
                         type="button"
                         onClick={() => handleSelectSlot(slot, false, false)}
-                        className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer shadow-2xs ${
-                          isSelected
+                        className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition flex flex-col items-center justify-center cursor-pointer shadow-2xs ${isSelected
                             ? 'bg-[#252525] border-[#252525] text-[#F7F5F1] ring-2 ring-[#C8B58D]'
                             : 'bg-white border-stone-200 text-[#252525] hover:border-[#C8B58D] hover:bg-[#F7F5F1]'
-                        }`}
+                          }`}
                       >
                         <span className="flex items-center gap-1">
                           {isSelected && <Check className="w-3 h-3 text-[#C8B58D]" />}

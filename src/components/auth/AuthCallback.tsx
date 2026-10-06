@@ -46,13 +46,16 @@ export const AuthCallback: React.FC<AuthCallbackProps> = ({ onSuccess, onNavigat
       }
     }
 
-    const processSession = async (sessionUser: any) => {
+    const processSession = async () => {
       try {
         if (!isMounted) return;
         setStatusMessage('Syncing patient chart and medical records...');
 
         // Bridge Supabase user -> Dentiflow Patient User
-        const patientUser = await AuthService.syncGoogleUser(sessionUser);
+        const patientUser = await AuthService.getCurrentUser();
+        if (!patientUser) {
+          throw new Error('No authenticated user profile was found.');
+        }
 
         if (isMounted) {
           // Clean the OAuth tokens and URL hash from browser history
@@ -75,7 +78,7 @@ export const AuthCallback: React.FC<AuthCallbackProps> = ({ onSuccess, onNavigat
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') {
         if (session?.user) {
-          await processSession(session.user);
+          await processSession();
         }
       }
     });
@@ -88,14 +91,14 @@ export const AuthCallback: React.FC<AuthCallbackProps> = ({ onSuccess, onNavigat
       }
 
       if (session?.user) {
-        await processSession(session.user);
+        await processSession();
       } else {
         // Give Supabase client a brief moment to finish URL fragment parsing
         const timeout = setTimeout(() => {
           if (isMounted && !error) {
             supabase.auth.getSession().then(({ data: { session: retrySession } }) => {
               if (retrySession?.user) {
-                processSession(retrySession.user);
+                processSession();
               } else if (isMounted) {
                 setError('No authenticated Supabase session was detected in the callback URL.');
               }
@@ -138,8 +141,8 @@ export const AuthCallback: React.FC<AuthCallbackProps> = ({ onSuccess, onNavigat
   return (
     <div className="min-h-screen bg-[#F5F3EF] flex flex-col items-center justify-center p-4 font-sans text-[#252525]">
       <div className="w-full max-w-md bg-white/90 border border-stone-200/80 rounded-3xl p-8 shadow-[0_18px_55px_rgba(60,55,45,0.08)] backdrop-blur-md text-center">
-        <div className="w-14 h-14 rounded-2xl bg-[#EDE8DE] border border-[#C8B58D]/30 flex items-center justify-center mx-auto mb-4 animate-pulse">
-          <ToothIcon size={24} />
+        <div className="w-14 h-14 rounded-2xl bg-[#EDE8DE] border border-[#C8B58D]/30 flex items-center justify-center mx-auto mb-4 animate-pulse overflow-hidden p-1">
+          <ToothIcon size={48} />
         </div>
         <div className="w-6 h-6 border-3 border-[#C8B58D] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
         <h2 className="text-base font-extrabold text-[#252525]">Completing Authentication</h2>

@@ -190,8 +190,8 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           {/* Brand Info */}
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#1A1A1A] text-white flex items-center justify-center shadow-xs">
-              <Building className="w-5 h-5 text-[#C8B58D]" />
+            <div className="w-10 h-10 rounded-xl bg-[#1A1A1A] text-white flex items-center justify-center shadow-xs overflow-hidden p-0.5">
+              <ToothIcon size={36} />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -331,22 +331,20 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
               <button
                 type="button"
                 onClick={() => setStatusFilter('all')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer ${
-                  statusFilter === 'all'
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer ${statusFilter === 'all'
                     ? 'bg-white text-[#1E1E1E] shadow-2xs font-bold'
                     : 'text-stone-600 hover:text-stone-900'
-                }`}
+                  }`}
               >
                 All Bills ({invoices.length})
               </button>
               <button
                 type="button"
                 onClick={() => setStatusFilter('outstanding')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                  statusFilter === 'outstanding'
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${statusFilter === 'outstanding'
                     ? 'bg-white text-amber-800 shadow-2xs font-bold'
                     : 'text-stone-600 hover:text-amber-800'
-                }`}
+                  }`}
               >
                 <Clock className="w-3 h-3 text-amber-600" />
                 <span>Outstanding</span>
@@ -354,11 +352,10 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
               <button
                 type="button"
                 onClick={() => setStatusFilter('paid')}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
-                  statusFilter === 'paid'
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${statusFilter === 'paid'
                     ? 'bg-white text-emerald-800 shadow-2xs font-bold'
                     : 'text-stone-600 hover:text-emerald-800'
-                }`}
+                  }`}
               >
                 <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                 <span>Paid</span>
@@ -485,13 +482,12 @@ export const ReceptionistDashboard: React.FC<ReceptionistDashboardProps> = ({
                         {/* 7. Status */}
                         <td className="py-3.5 px-4 text-center">
                           <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide inline-block ${
-                              isPaid
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide inline-block ${isPaid
                                 ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
                                 : inv.status === 'partial'
-                                ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                                : 'bg-rose-100 text-rose-800 border border-rose-200'
-                            }`}
+                                  ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                                  : 'bg-rose-100 text-rose-800 border border-rose-200'
+                              }`}
                           >
                             {isPaid ? 'PAID' : inv.status.replace('_', ' ').toUpperCase()}
                           </span>

@@ -15,8 +15,11 @@ import {
   LogOut,
   Stethoscope,
   ShieldCheck,
+  Lock,
+  Palette,
   Image as ImageIcon
 } from 'lucide-react';
+
 
 export type ActiveTab =
   | 'dashboard'
@@ -30,6 +33,7 @@ export type ActiveTab =
   | 'inventory'
   | 'staff'
   | 'reports'
+  | 'brand-studio'
   | 'account-access'
   | 'profile';
 
@@ -76,7 +80,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'chart', label: 'Dental Odontogram', icon: Stethoscope },
         { id: 'treatment-plans', label: 'Treatment Plans', icon: Layers },
         { id: 'clinical', label: 'SOAP Notes & Rx', icon: FileText },
+
+
         { id: 'billing', label: 'Billing', icon: CreditCard }
+
       ];
     }
 
@@ -93,6 +100,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       { id: 'inventory', label: 'Sterile Inventory', icon: Package },
       { id: 'staff', label: 'Doctors & Staff', icon: UserCheck },
       { id: 'reports', label: 'Practice Reports', icon: BarChart3 },
+      { id: 'brand-studio', label: 'Brand Studio', icon: Palette },
       { id: 'account-access', label: 'User & Account Access', icon: ShieldCheck }
     ];
   };
@@ -117,11 +125,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="flex flex-col flex-1 overflow-y-auto">
           {/* Brand Header */}
           <div className="h-16 flex items-center gap-3 px-4 border-b border-[#C8B58D]/20 bg-[#EDE8DE]/70">
-            <span className="w-9 h-9 rounded-xl bg-[#C8B58D] text-[#252525] flex items-center justify-center border border-[#C8B58D]/40 shadow-xs">
-              <ToothIcon size={20} />
+            <span className="w-9 h-9 rounded-xl bg-[#C8B58D] text-[#252525] flex items-center justify-center border border-[#C8B58D]/40 shadow-xs overflow-hidden p-0.5">
+              <ToothIcon size={32} />
             </span>
             <div className="flex flex-col">
-              <span className="font-extrabold text-[#252525] text-sm tracking-tight leading-none font-display">
+              <span className="oralix-brand-text text-[#252525] text-sm tracking-tight leading-none font-display">
                 Oralix
               </span>
               <span className="text-[10px] text-[#6F6D69] font-bold uppercase tracking-wider mt-1">
