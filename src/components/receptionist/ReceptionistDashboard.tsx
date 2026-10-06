@@ -24,6 +24,7 @@ import { downloadTaxInvoicePdfBlob } from '../../utils/pdfGenerator';
 import { InvoiceDetailsModal } from './InvoiceDetailsModal';
 import { ReceptionistPaymentModal } from './ReceptionistPaymentModal';
 import { useToast } from '../common/Toast';
+import { ToothIcon } from '../common/ToothIcon';
 import { supabase } from '../../utils/supabaseClient';
 import { mapRowToInvoice } from '../../utils/storage';
 

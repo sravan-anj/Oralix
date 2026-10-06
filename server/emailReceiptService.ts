@@ -306,19 +306,22 @@ export async function sendAuthoritativeReceiptEmail(
         const rows = await connRes.json();
         const conn = rows?.[0];
         if (conn?.refresh_token) {
-          const clientId = process.env.GOOGLE_CLIENT_ID.trim();
-          const clientSecret = process.env.GOOGLE_CLIENT_SECRET.trim();
+          const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+          const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
 
-          const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-              client_id: clientId,
-              client_secret: clientSecret,
-              refresh_token: conn.refresh_token,
-              grant_type: 'refresh_token'
-            }).toString()
-          });
+          if (!clientId || !clientSecret) {
+            console.warn('[emailReceiptService] Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in environment; skipping direct Gmail fallback');
+          } else {
+            const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({
+                client_id: clientId,
+                client_secret: clientSecret,
+                refresh_token: conn.refresh_token,
+                grant_type: 'refresh_token'
+              }).toString()
+            });
 
           if (tokenRes.ok) {
             const tokenData = await tokenRes.json();
@@ -391,6 +394,7 @@ export async function sendAuthoritativeReceiptEmail(
             }
           }
         }
+      }
       }
     } catch (fbErr: any) {
       console.error('[emailReceiptService] Fallback Gmail dispatch error:', fbErr);
