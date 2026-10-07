@@ -51,6 +51,7 @@ import { AccountAccessView } from './components/accountAccess/AccountAccessView'
 import { DoctorChangePasswordModal } from './components/auth/DoctorChangePasswordModal';
 import { BrandStudioView } from './components/marketing/BrandStudioView';
 import { ReceptionistPortal } from './components/receptionist/ReceptionistPortal';
+import { DentalAssistant } from './components/chatbot/DentalAssistant';
 import { ShieldCheck } from 'lucide-react';
 
 function MainApp() {
@@ -955,6 +956,9 @@ function MainApp() {
         />
       )}
       */}
+
+      {/* Floating AI Chatbot – visible across all authenticated workstation pages */}
+      <DentalAssistant />
     </div>
   );
 }
